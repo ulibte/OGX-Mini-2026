@@ -5,6 +5,8 @@ Firmware for the RP2040, capable of emulating gamepads for several game consoles
 
 [**Visit the web app here**](https://wiredopposite.github.io/OGX-Mini-WebApp/) to change your mappings and deadzone settings. To pair the OGX-Mini with the web app via USB, plug your controller in, then connect it to your PC, hold **Start + Left Bumper + Right Bumper** to enter web app mode. Click "Connect via USB" in the web app and select the OGX-Mini. You can also pair via Bluetooth, no extra steps are needed in that case. 
 
+[**Join the discord here!**](https://discord.gg/guaBh9JZQ)
+
 ## Supported platforms
 - Original Xbox
 - Playstation 3
