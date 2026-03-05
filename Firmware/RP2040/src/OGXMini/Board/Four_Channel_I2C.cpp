@@ -449,9 +449,9 @@ void four_ch_i2c::run() {
     if (I2C::role() == I2C::Role::MASTER) {
         while (true) {
             TaskQueue::Core0::process_tasks();
+            tud_task();
             I2C::Master::process();
             device_driver->process(0, _gamepads[0]);
-            tud_task();
 #if MAIN_LOOP_DELAY_US > 0
             sleep_us(MAIN_LOOP_DELAY_US);
 #endif
@@ -459,8 +459,8 @@ void four_ch_i2c::run() {
     } else {
         while (true) {
             TaskQueue::Core0::process_tasks();
-            device_driver->process(0, _gamepads[0]);
             tud_task();
+            device_driver->process(0, _gamepads[0]);
 #if MAIN_LOOP_DELAY_US > 0
             sleep_us(MAIN_LOOP_DELAY_US);
 #endif

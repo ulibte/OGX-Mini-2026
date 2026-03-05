@@ -96,6 +96,17 @@ In XInput mode, the adapter no longer sends a report only when `gamepad.new_pad_
 
 **File:** `src/USBDevice/DeviceDriver/XInput/XInput.cpp` — `process()` always builds and sends the report; no gate on `new_pad_in()`.
 
+### Switch and PS3: latest state when USB ready
+
+- **Switch (Pro emulation):** Each `process()` call reads fresh `get_pad_in()`, builds the report, and sends when `tud_hid_n_ready(0)`. No `new_pad_in()` gate — the host gets the latest state every time the IN endpoint is free.
+- **PS3:** Report is built only when `tud_hid_ready()`; when ready, it uses `get_pad_in()` so the console always receives the latest state. Same low-latency pattern as XInput.
+
+### Main loop order: tud_task() before process()
+
+The main loop now calls **`tud_task()` before** `device_driver->process()`. That way the USB stack updates completion status of the previous IN transfer first; then `process()` sees the endpoint as ready and can send the next report immediately with the latest gamepad state. Reduces latency by up to one main-loop iteration (avoids sending only every other loop when the host polls frequently).
+
+**Files:** `src/OGXMini/Board/PicoW.cpp`, `Standard.cpp`, `Four_Channel_I2C.cpp` — order is `process_tasks()` → `tud_task()` → `process()` for each gamepad.
+
 ### How to use
 
 | Goal | Setting |
@@ -111,10 +122,46 @@ In XInput mode, the adapter no longer sends a report only when `gamepad.new_pad_
 
 ---
 
+## Additional board support (RP2350_ZERO, RP2040_XIAO, RP2354)
+
+**Source:** [Sakura-Research-Lab/OGX-Mini-2026-Testing](https://github.com/Sakura-Research-Lab/OGX-Mini-2026-Testing).
+
+Three additional boards use the same Standard (PIO-USB host) code path as PI_PICO, RP2040_ZERO, ADAFRUIT_FEATHER, and RP2350_USB_A:
+
+| Board | CMake option | Notes |
+|-------|--------------|--------|
+| Waveshare RP2350-Zero | `OGXM_BOARD=RP2350_ZERO` | PIO USB D+ = GP10, RGB = GP16; RP2350. |
+| Seeed Studio XIAO RP2040 | `OGXM_BOARD=RP2040_XIAO` | PIO USB D+ = GP0, RGB = GP12, LED = GP17. |
+| RP2354 | `OGXM_BOARD=RP2354` | PIO USB D+ = GP0, LED = GP25; RP2350. |
+
+**Files:** `src/Board/Config.h` (board IDs and pin defines), `src/OGXMini/OGXMini.cpp` (init/run/host_mounted tables), `src/OGXMini/Board/Standard.cpp` (extended `#if`), `CMakeLists.txt` (board branches).
+
+---
+
+## 8BitDo XInput (Xbox 360) host fix
+
+**Source:** [Sakura-Research-Lab/OGX-Mini-2026-Testing](https://github.com/Sakura-Research-Lab/OGX-Mini-2026-Testing).
+
+Some 8BitDo wired XInput controllers (VID 0x2DC8, PID 0x3016 or 0x3106) can disconnect or behave oddly if the host leaves the controller LED on. The Xbox 360 host driver now detects these devices by VID/PID and schedules a repeating delayed task (every 1 s) that sends “LED off” to the controller. Other controllers are unchanged (LED stays on as before).
+
+**File:** `src/USBHost/HostDriver/XInput/Xbox360.cpp` — `initialize()` calls `tuh_vid_pid_get()`, and if 8BitDo, queues `TaskQueue::Core1::queue_delayed_task(..., 1000, true, set_led(..., false))`.
+
+---
+
+## Switch Pro — analog stick sensitivity
+
+A configurable sensitivity gain is applied to the analog sticks in Switch Pro emulation. Raw stick values (outside the deadzone) are scaled by **STICK_GAIN_NUM / STICK_GAIN_DEN** (default 120/100 = 1.2×) before mapping to the 12-bit Switch report. The same physical deflection produces slightly larger output for a more responsive feel.
+
+**File:** `src/USBDevice/DeviceDriver/Switch/Switch.cpp` — `gamepad_to_switch_report()`; tune via `STICK_GAIN_NUM` and `STICK_GAIN_DEN`.
+
+---
+
 ## Summary
 
 | Area | Improvement |
 |------|-------------|
-| **XInput (360)** | XSM3 authentication and descriptors aligned with joypad-os; adapter works on Xbox 360 with BT controllers (PS5, Xbox One). |
+| **XInput (360)** | XSM3 authentication and descriptors aligned with joypad-os; adapter works on Xbox 360 with BT controllers (PS5, Xbox One). 8BitDo wired fix: LED keepalive for VID 0x2DC8 / PID 0x3016 or 0x3106. |
 | **PS3** | Stuck inputs and delays addressed via L2/R2 axes; DS3-accurate sticks (0–255, center 0x80, ~1.5% deadzone); D-pad and face button mapping; Home (PS) button with 8-frame latch for BT controllers. |
-| **Latency** | Main loop delay default **0 µs** (low latency); XInput always sends latest state when USB is ready for lower latency with PS5/Xbox One over BT. |
+| **Switch Pro** | Analog stick sensitivity gain (default 1.2×) for more responsive sticks; configurable in `Switch.cpp`. |
+| **Boards** | RP2350_ZERO, RP2040_XIAO, RP2354 supported (Standard/PIO-USB host path). |
+| **Latency** | Main loop delay default **0 µs**; `tud_task()` before `process()` so reports send every loop when ready; XInput/Switch/PS3 send latest state when USB ready (no `new_pad_in()` gate). |

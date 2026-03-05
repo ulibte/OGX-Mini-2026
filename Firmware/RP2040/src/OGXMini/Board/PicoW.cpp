@@ -200,12 +200,12 @@ void pico_w::run() {
     static uint32_t loop_count = 0;
     while (true) {
         TaskQueue::Core0::process_tasks();
-
+        if (!wii_mode)
+            tud_task();
         for (uint8_t i = 0; i < MAX_GAMEPADS; ++i) {
             device_driver->process(i, _gamepads[i]);
         }
         if (!wii_mode) {
-            tud_task();
             if (tud_mounted() && !mounted_logged) {
                 mounted_logged = true;
                 OGXM_LOG("PicoW run: USB configured\n");

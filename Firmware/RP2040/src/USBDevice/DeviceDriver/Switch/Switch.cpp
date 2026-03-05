@@ -81,12 +81,16 @@ void SwitchDevice::gamepad_to_switch_report(const Gamepad::PadIn& gp_in, SwitchP
 	if (gp_in.buttons & gamepad.MAP_BUTTON_LB) out.buttons[2] |= SwitchPro::Btn::L;
 	if (gp_in.trigger_l)                      out.buttons[2] |= SwitchPro::Btn::ZL;
 
-	// Sticks: int16 -> 12-bit (0x000–0xFFF), center 0x7FF. Small deadzone.
+	// Sticks: int16 -> 12-bit (0x000–0xFFF), center 0x7FF. Small deadzone + slight sensitivity boost.
 	constexpr int16_t DZ = 512;
+	constexpr int STICK_GAIN_NUM = 120, STICK_GAIN_DEN = 100;  // 1.2x sensitivity
 	auto to12 = [](int16_t val) -> uint16_t {
 		if (val > -DZ && val < DZ)
 			return SwitchPro::STICK_MID;
-		int32_t v = static_cast<int32_t>(val) + 32768;
+		int32_t scaled = (static_cast<int32_t>(val) * STICK_GAIN_NUM) / STICK_GAIN_DEN;
+		if (scaled > 32767) scaled = 32767;
+		if (scaled < -32768) scaled = -32768;
+		int32_t v = scaled + 32768;
 		int32_t u = (v * 4095 + 32767) / 65535;
 		if (u < 0) u = 0;
 		if (u > 4095) u = 4095;
