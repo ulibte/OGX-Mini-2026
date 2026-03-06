@@ -10,6 +10,16 @@
 #include "UserSettings/NVSTool.h"
 #include "Gamepad/Gamepad.h"
 
+/** Input source for gamepad 0: USB/BT (default) or GPIO (PS1/PS2, GameCube, or Dreamcast controller). */
+enum class HostInputSource : uint8_t
+{
+    USB = 0,
+    PSX_GPIO = 1,
+    GAMECUBE_GPIO = 2,
+    DREAMCAST_GPIO = 3,
+    N64_GPIO = 4
+};
+
 /* Only write/store flash from Core0 */
 class UserSettings
 {
@@ -31,6 +41,11 @@ public:
 
     DeviceDriverType get_current_driver();
     bool check_for_driver_change(Gamepad& gamepad);
+
+    HostInputSource get_input_source();
+    void store_input_source(HostInputSource source);
+    /** When driver is PS1PS2 or GAMECUBE, returns true if Start+Select held long enough and cycles input source (stores and returns true). */
+    bool check_for_input_source_change(Gamepad& gamepad);
     
     UserProfile get_profile_by_index(const uint8_t index);
     UserProfile get_profile_by_id(const uint8_t profile_id);
@@ -62,7 +77,10 @@ private:
     const std::string PROFILE_KEY(const uint8_t profile_id);
     const std::string ACTIVE_PROFILE_KEY(const uint8_t index);
     const std::string DRIVER_TYPE_KEY();
+    const std::string INPUT_SOURCE_KEY();
     const std::string DATETIME_KEY();
+    HostInputSource current_input_source_{HostInputSource::USB};
+    bool input_source_loaded_{false};
 };
 
 #endif // _USER_SETTINGS_H_

@@ -90,16 +90,21 @@ Descriptors and XSM3 flow are aligned with [joypad-os](https://github.com/joypad
 - `src/OGXMini/Board/Standard.cpp`, `PicoW.cpp`, `Four_Channel_I2C.cpp` — use `sleep_us(MAIN_LOOP_DELAY_US)` when `> 0`.
 - `CMakeLists.txt` — `MAIN_LOOP_DELAY_US` cache variable (default 0).
 
-### XInput: always send latest state
+### XInput (360): report always fresh; send when ready (minimal latency)
 
-In XInput mode, the adapter no longer sends a report only when `gamepad.new_pad_in()` is true. It **always** reads the current gamepad state and sends whenever the USB IN endpoint is free. That way the host (e.g. 360) gets updates at its poll interval (4 ms) with the freshest state, instead of being limited by how often the BT stack sets “new input.” Reduces perceived latency with PS5/Xbox One over Bluetooth.
+Same goal as Switch Pro and PS3: the only added latency when using a wireless controller is the Bluetooth radio.
 
-**File:** `src/USBDevice/DeviceDriver/XInput/XInput.cpp` — `process()` always builds and sends the report; no gate on `new_pad_in()`.
+- **Every** `process()` call: read `get_pad_in()` and build `in_report_` (buttons, triggers, sticks). Then, if suspended, wake; call `tud_xinput::send_report(&in_report_)`. `send_report()` only actually transmits when the IN endpoint is free (`send_report_ready()`); otherwise we keep the latest `in_report_` so that (1) the host’s `get_report_cb` returns current state if it polls, and (2) the next time the endpoint is free we send that report. No `new_pad_in()` gate.
+- **File:** `src/USBDevice/DeviceDriver/XInput/XInput.cpp` — `process()` always builds `in_report_` every loop; `tud_xinput::send_report()` sends only when `send_report_ready()` (see `tud_xinput.cpp`).
 
-### Switch and PS3: latest state when USB ready
+### Switch Pro and PS3: report always fresh; send when ready (minimal latency)
 
-- **Switch (Pro emulation):** Each `process()` call reads fresh `get_pad_in()`, builds the report, and sends when `tud_hid_n_ready(0)`. No `new_pad_in()` gate — the host gets the latest state every time the IN endpoint is free.
-- **PS3:** Report is built only when `tud_hid_ready()`; when ready, it uses `get_pad_in()` so the console always receives the latest state. Same low-latency pattern as XInput.
+**Goal:** For Switch Pro and PS3 output modes, the only added latency should be wireless Bluetooth (radio) when using a BT controller. The adapter does not batch, throttle, or delay reports.
+
+- **Switch Pro:** Every `process()` call reads `get_pad_in()`, builds `switch_report_`, and builds the standard or subcommand report into `report_` **before** any USB decisions. So (1) the host’s `get_report` (poll) always gets the latest `report_`, and (2) when `tud_hid_n_ready(0)` we push that same report. Init reply (0x81) is sent first when pending, then the standard report. No “only build when ready” — report is always current.
+- **PS3:** Every `process()` call reads `get_pad_in()` and builds `report_in_` (full DS3 report). Then, when `tud_hid_ready()`, we send it. So (1) the host’s `get_report_cb` always returns the latest `report_in_`, and (2) we push that report whenever the IN endpoint is free. No “only build when ready” — report is always current.
+
+Both modes: no `new_pad_in()` gate; main loop runs with `MAIN_LOOP_DELAY_US=0` by default; `tud_task()` runs before `process()` so the endpoint is ready when we try to send.
 
 ### Main loop order: tud_task() before process()
 
@@ -148,6 +153,16 @@ Some 8BitDo wired XInput controllers (VID 0x2DC8, PID 0x3016 or 0x3106) can disc
 
 ---
 
+## PS5 (DualSense) over Bluetooth — reducing perceived delay vs Xbox One
+
+**Why PS5 can feel slower than Xbox One over BT:** DualSense sends larger reports (78 bytes, with gyro/accel), and Bluepad32’s DS5 parser does more work per report (calibration, etc.). Xbox One reports are smaller and the parser is lighter. Bluetooth poll/report rate and radio latency dominate; the adapter’s job is to not add extra delay.
+
+**Change in this firmware:** The PS5 adaptive-trigger toggle (touchpad/mute button) now runs **after** `set_pad_in(gp_in)`. Previously it ran at the start of the callback; when you pressed the touchpad it could send two output reports (left/right trigger effect) before updating gamepad state, which could delay the next main-loop read. Now the gamepad state is always written first, then the trigger effect is sent, so input is not held up by the trigger command.
+
+**If you need minimum latency with a DualSense:** Use the controller **wired** on the PIO USB host port when possible; wired PS5 uses the same low-latency path as other USB host controllers and avoids BT report size and rate limits.
+
+---
+
 ## Switch Pro — analog stick sensitivity
 
 A configurable sensitivity gain is applied to the analog sticks in Switch Pro emulation. Raw stick values (outside the deadzone) are scaled by **STICK_GAIN_NUM / STICK_GAIN_DEN** (default 120/100 = 1.2×) before mapping to the 12-bit Switch report. The same physical deflection produces slightly larger output for a more responsive feel.
@@ -160,8 +175,8 @@ A configurable sensitivity gain is applied to the analog sticks in Switch Pro em
 
 | Area | Improvement |
 |------|-------------|
-| **XInput (360)** | XSM3 authentication and descriptors aligned with joypad-os; adapter works on Xbox 360 with BT controllers (PS5, Xbox One). 8BitDo wired fix: LED keepalive for VID 0x2DC8 / PID 0x3016 or 0x3106. |
+| **XInput (360)** | XSM3 authentication and descriptors aligned with joypad-os; adapter works on Xbox 360 with BT controllers (PS5, Xbox One). 8BitDo wired fix: LED keepalive for VID 0x2DC8 / PID 0x3016 or 0x3106. Report built every loop, send when endpoint ready — same minimal-latency pattern as Switch/PS3. |
 | **PS3** | Stuck inputs and delays addressed via L2/R2 axes; DS3-accurate sticks (0–255, center 0x80, ~1.5% deadzone); D-pad and face button mapping; Home (PS) button with 8-frame latch for BT controllers. |
 | **Switch Pro** | Analog stick sensitivity gain (default 1.2×) for more responsive sticks; configurable in `Switch.cpp`. |
 | **Boards** | RP2350_ZERO, RP2040_XIAO, RP2354 supported (Standard/PIO-USB host path). |
-| **Latency** | Main loop delay default **0 µs**; `tud_task()` before `process()` so reports send every loop when ready; XInput/Switch/PS3 send latest state when USB ready (no `new_pad_in()` gate). |
+| **Latency** | Main loop delay default **0 µs**; `tud_task()` before `process()` so reports send every loop when ready; XInput/Switch/PS3 send latest state when USB ready (no `new_pad_in()` gate). Switch Pro and PS3 always build report every loop so host poll (`get_report`) and IN push both see current state — only remaining delay is BT radio when wireless. |

@@ -6,9 +6,15 @@
 #include "device/usbd_pvt.h"
 
 #include "USBDevice/DeviceManager.h"
+#include "USBDevice/DeviceDriver/DeviceDriverTypes.h"
 
 const usbd_class_driver_t *usbd_app_driver_get_cb(uint8_t *driver_count) 
 {
+	DeviceDriverType dt = DeviceManager::get_instance().get_driver_type();
+	if (dt == DeviceDriverType::PS1PS2 || dt == DeviceDriverType::GAMECUBE || dt == DeviceDriverType::DREAMCAST) {
+		*driver_count = 0;
+		return nullptr;
+	}
 	*driver_count = 1;
 	return DeviceManager::get_instance().get_driver()->get_class_driver();
 }

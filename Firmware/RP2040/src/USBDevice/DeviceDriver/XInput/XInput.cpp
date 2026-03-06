@@ -53,10 +53,9 @@ void XInputDevice::process(const uint8_t idx, Gamepad& gamepad)
 	// joypad-os: run XSM3 crypto in task loop, not in USB callback
 	xsm3_process_pending();
 
-	// Always read latest state and send when USB is ready (reduces latency vs only sending on new_pad_in())
+	// Always read latest state and build report every loop so get_report_cb and IN send both see current state (minimal latency; only delay is BT radio when wireless).
 	in_report_.buttons[0] = 0;
 	in_report_.buttons[1] = 0;
-
 	Gamepad::PadIn gp_in = gamepad.get_pad_in();
 
 	switch (gp_in.dpad)
@@ -113,6 +112,7 @@ void XInputDevice::process(const uint8_t idx, Gamepad& gamepad)
 	if (tud_suspended())
 		tud_remote_wakeup();
 
+	// send_report() only transmits when endpoint is free; otherwise we keep latest in_report_ for get_report_cb
 	tud_xinput::send_report((uint8_t*)&in_report_, sizeof(XInput::InReport));
 
     if (tud_xinput::receive_report(reinterpret_cast<uint8_t*>(&out_report_), sizeof(XInput::OutReport)) &&

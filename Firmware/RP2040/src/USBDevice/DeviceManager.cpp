@@ -12,6 +12,10 @@
 #include "USBDevice/DeviceDriver/XboxOG/XboxOG_SB.h"
 #include "USBDevice/DeviceDriver/XboxOG/XboxOG_XR.h"
 #include "USBDevice/DeviceDriver/WebApp/WebApp.h"
+#include "USBDevice/DeviceDriver/PS1PS2/PS1PS2.h"
+#include "USBDevice/DeviceDriver/GameCube/GameCube.h"
+#include "USBDevice/DeviceDriver/Dreamcast/Dreamcast.h"
+#include "USBDevice/DeviceDriver/N64/N64.h"
 #include "USBDevice/DeviceManager.h"
 
 #if defined(CONFIG_EN_UART_BRIDGE)
@@ -21,7 +25,8 @@
 void DeviceManager::initialize_driver(  DeviceDriverType driver_type, 
                                         Gamepad(&gamepads)[MAX_GAMEPADS]) {
     //TODO: Put gamepad setup in the drivers themselves
-    bool has_analog = false; 
+    bool has_analog = false;
+    current_driver_type_ = driver_type;
 
     printf("Attempting to allocate driver\n");
     
@@ -51,6 +56,22 @@ void DeviceManager::initialize_driver(  DeviceDriverType driver_type,
         case DeviceDriverType::WII:
             printf("WII Loaded\n");
             device_driver_ = std::make_unique<WiiDevice>();
+            break;
+        case DeviceDriverType::PS1PS2:
+            printf("PS1/PS2 Loaded (GPIO output)\n");
+            device_driver_ = std::make_unique<PS1PS2Device>();
+            break;
+        case DeviceDriverType::GAMECUBE:
+            printf("GameCube Loaded (GPIO output)\n");
+            device_driver_ = std::make_unique<GameCubeDevice>();
+            break;
+        case DeviceDriverType::DREAMCAST:
+            printf("Dreamcast Loaded (GPIO Maple Bus)\n");
+            device_driver_ = std::make_unique<DreamcastDevice>();
+            break;
+        case DeviceDriverType::N64:
+            printf("N64 Loaded (GPIO output)\n");
+            device_driver_ = std::make_unique<N64Device>();
             break;
         case DeviceDriverType::XINPUT:
             printf("XINPUT Loaded\n"); 

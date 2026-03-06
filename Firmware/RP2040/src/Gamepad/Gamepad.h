@@ -158,10 +158,18 @@ public:
     inline PadIn get_pad_in()
     {
         mutex_enter_blocking(&pad_in_mutex_);
-        PadIn pad_in = pad_in_;
-        new_pad_in_.store(false);
+        PadIn pad_in;
+        if (pad_in_count_ > 0) {
+            pad_in = pad_in_queue_[pad_in_head_];
+            pad_in_head_ = (pad_in_head_ + 1) % PAD_IN_QUEUE_SIZE;
+            pad_in_count_--;
+            last_pad_in_ = pad_in;
+            if (pad_in_count_ == 0)
+                new_pad_in_.store(false);
+        } else {
+            pad_in = last_pad_in_;
+        }
         mutex_exit(&pad_in_mutex_);
-
         return pad_in;
     }
 
@@ -213,7 +221,16 @@ public:
     inline void set_pad_in(PadIn pad_in)
     {
         mutex_enter_blocking(&pad_in_mutex_);
-        pad_in_ = pad_in;
+        if (pad_in_count_ < PAD_IN_QUEUE_SIZE) {
+            pad_in_queue_[pad_in_tail_] = pad_in;
+            pad_in_tail_ = (pad_in_tail_ + 1) % PAD_IN_QUEUE_SIZE;
+            pad_in_count_++;
+        } else {
+            /* Queue full: drop oldest, keep newest so fast taps (press+release) both get sent */
+            pad_in_head_ = (pad_in_head_ + 1) % PAD_IN_QUEUE_SIZE;
+            pad_in_queue_[pad_in_tail_] = pad_in;
+            pad_in_tail_ = (pad_in_tail_ + 1) % PAD_IN_QUEUE_SIZE;
+        }
         new_pad_in_.store(true);
         mutex_exit(&pad_in_mutex_);
     }
@@ -237,10 +254,13 @@ public:
     void set_stick_y_positive_is_up(bool v) { stick_y_positive_is_up_ = v; }
     bool stick_y_positive_is_up() const { return stick_y_positive_is_up_; }
 
-    inline void reset_pad_in() 
-	{ 
+    inline void reset_pad_in()
+    {
         mutex_enter_blocking(&pad_in_mutex_);
-        pad_in_ = PadIn();
+        pad_in_head_ = 0;
+        pad_in_tail_ = 0;
+        pad_in_count_ = 0;
+        last_pad_in_ = PadIn();
         mutex_exit(&pad_in_mutex_);
         new_pad_in_.store(true);
     }
@@ -354,13 +374,19 @@ public:
                     : trigger_value;
     }
 
-private:    
+    static constexpr unsigned PAD_IN_QUEUE_SIZE = 2;
+
+private:
     mutex_t pad_in_mutex_;
     mutex_t pad_out_mutex_;
     mutex_t chatpad_in_mutex_;
 
     PadOut pad_out_;
-    PadIn pad_in_;
+    PadIn pad_in_queue_[PAD_IN_QUEUE_SIZE];
+    unsigned pad_in_head_{0};
+    unsigned pad_in_tail_{0};
+    unsigned pad_in_count_{0};
+    PadIn last_pad_in_{};
     ChatpadIn chatpad_in_{0};
 
     std::atomic<bool> new_pad_in_{false};

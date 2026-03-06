@@ -16,6 +16,10 @@ enum class DeviceDriverType : uint8_t
     SWITCH,
     WIIU,
     WII,   // Wiimote (Pico W/2W: controller on PIO USB, BT for Wii link)
+    PS1PS2,   // PS1/PS2 controller over GPIO (no USB device; output to console port)
+    GAMECUBE, // GameCube controller over GPIO (single wire; no USB device)
+    DREAMCAST, // Dreamcast controller over Maple Bus GPIO (no USB device; output/input to console)
+    N64,       // N64 controller over GPIO (single wire; no USB device; output to N64 console)
     WEBAPP = 100,
     UART_BRIDGE
 };

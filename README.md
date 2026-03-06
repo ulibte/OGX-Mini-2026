@@ -16,8 +16,12 @@ Firmware for the RP2040, capable of emulating gamepads for several game consoles
 - DInput
 - Wii U (GameCube Adapter)
 - **Wii (Wiimote)** — Pico W / Pico 2 W only; build with `-DOGXM_FIXED_DRIVER=WII`. See [Wii Mode Guide](Firmware/RP2040/docs/Wii_Mode_Guide.md).
+- **PlayStation 1 & 2** — GPIO output to console controller port (DualShock-style).
+- **Dreamcast** — GPIO output over Maple Bus to console controller port.
+- **GameCube / Wii (GameCube ports)** — GPIO output over single-wire JoyBus.
+- **Nintendo 64** — GPIO output over single-wire to controller port.
 
-**RP2040 output modes (USB device):** XInput (Xbox 360 + XSM3), DInput, PS3, **Switch Pro** (Nintendo Switch Pro Controller emulation), Wii U, **Wii (Wiimote, build-option only)**, Xbox OG (Gamepad / Steel Battalion / XRemote), PS Classic, Web App. On Pico 2 W, Bluetooth runs on Core1 and USB on Core0; you can build with a fixed mode or use button combos to switch at runtime (Start + D-pad held ~3 s). **Wii is not in the combo list** — use a Wii-only build to get Wiimote output.
+**RP2040 output modes:** **USB device:** XInput (Xbox 360 + XSM3), DInput, PS3, **Switch Pro** (Nintendo Switch Pro Controller emulation), Wii U, **Wii (Wiimote, build-option only)**, Xbox OG (Gamepad / Steel Battalion / XRemote), PS Classic, Web App. **GPIO (no USB device):** PS1/PS2, Dreamcast, GameCube, N64 — use any wired USB or (on Pico W / Pico 2 W) Bluetooth controller as input. On Pico 2 W, Bluetooth runs on Core1 and USB on Core0; you can build with a fixed mode or use button combos to switch at runtime (Start + D-pad held ~3 s). **Wii is not in the combo list** — use a Wii-only build to get Wiimote output.
 
 ## Changing platforms
 By default the OGX-Mini will emulate an OG Xbox controller, you must hold a button combo for 3 seconds to change which platform you want to play on. Your chosen mode will persist after powering off the device. 
@@ -38,8 +42,16 @@ Start = Plus (Switch) = Options (Dualsense/DS4)
     - Start + Dpad Left
 - PlayStation Classic
     - Start + A (Cross for PlayStation and B for Switch gamepads)
+- PlayStation 1 / PlayStation 2 (GPIO output)
+    - Start + B
+- GameCube / Wii GameCube ports (GPIO output)
+    - Start + X
+- Dreamcast (GPIO output)
+    - Start + Y
 - Wii U (GameCube Adapter)
       - Start + Left Bumper + D-Pad Down
+- N64 (GPIO output)
+    - Start + Right Bumper
 - Web Application Mode
     - Start + Left Bumper + Right Bumper
 
@@ -52,7 +64,8 @@ For most controllers pressing and holding Start+Select (+/-, etc) for the contro
 For the OUYA controller there is no Start+Select, the disconnection combo has been set to L3+R3.
 
 ## Supported devices
-### Wired controllers
+### Wired controllers (USB input)
+The following work when the adapter is outputting to any supported platform (Xbox, Switch, XInput, PS3, DInput, **PS1/PS2**, **Dreamcast**, **GameCube**, **N64**, etc.):
 - Original Xbox Duke and S
 - Xbox 360, One, Series, and Elite
 - Dualshock 3 (PS3)
@@ -73,7 +86,7 @@ Note: There are some third party controllers that can change their VID/PID, thes
 - Most wireless adapters that present themselves as Switch/XInput/PlayStation controllers should work
 
 ### Wireless Bluetooth controllers (Pico W & ESP32)
-**Note:** Bluetooth functionality is in early testing, some may have quirks.
+**Note:** Bluetooth functionality is in early testing, some may have quirks. Bluetooth controllers work as input when outputting to **PS1/PS2**, **Dreamcast**, **GameCube**, or **N64** (same as wired USB in those modes).
 - Xbox Series, One, and Elite 2
 - Dualshock 3
 - Dualshock 4
@@ -93,6 +106,15 @@ Please visit [**this page**](https://bluepad32.readthedocs.io/en/latest/supporte
 
 # Features new to this fork:
 Note: These features have been added to the Pico W/ Pico 2 W firmware support, I do not have the other boards to test and implement the same fixes at this time.
+
+### Version 1.0.0.6a
+- **PS1/PS2 (GPIO) output mode** — The adapter can output to a PS1 or PS2 console as a controller over GPIO (no USB device in this mode). Select via button combo **Start + B** or set a fixed driver build. **Wiring (standard Pico):** connect the board to the console’s controller port using DATA=GP19, COMMAND=GP20, ATTENTION/SEL=GP21, CLOCK=GP22, ACKNOWLEDGE=GP26. Plug your USB gamepad into the adapter’s USB port; the console sees a DualShock-style controller. _Protocol and PIO code ported from [PicoGamepadConverter](https://github.com/Loc15/PicoGamepadConverter)._
+- **GameCube (GPIO) output mode** — The adapter can output to a GameCube or Wii (GameCube ports) as a controller over a single DATA line. Select via button combo **Start + X** or set a fixed driver build. **Wiring (standard Pico):** DATA=GP19, GND=GND; connect to the console’s controller port (single wire + ground). Plug your USB gamepad into the adapter’s USB port. _JoyBus protocol and PIO code ported from [PicoGamepadConverter](https://github.com/Loc15/PicoGamepadConverter)._
+- **N64 (GPIO) output mode** — The adapter can output to a Nintendo 64 console as a controller over a single DATA line. Select via button combo **Start + Right Bumper** or set a fixed driver build. **Wiring (standard Pico):** DATA=GP19, GND=GND; connect to the N64 controller port (same pin as GameCube). Use any **wired (USB)** or **Bluetooth** (Pico W / Pico 2 W) gamepad as input. _Protocol and PIO send code ported from [pdaxrom/usb2n64-adapter](https://github.com/pdaxrom/usb2n64-adapter). Memory pak and rumble pak are not emulated._
+- **Dreamcast (Maple Bus)** — **Input:** Read a real Dreamcast controller over GPIO (Pin A=GP10, B=GP11). **Output:** Use a USB or **Bluetooth** gamepad to control a Dreamcast: select **Start + Y** for Dreamcast mode, connect your BT or USB pad, wire the adapter’s Maple Bus (GP10/GP11) to the console’s controller port. Core1 runs the Maple device (responds to device info and GET_CONDITION); Core0 feeds gamepad state from USB/BT. When input source is **Dreamcast GPIO**, the bus is used as host only (read a DC pad). See [Dreamcast Port guide](Firmware/RP2040/docs/Dreamcast_Port.md). Maple Bus from [DreamPicoPort](https://github.com/OrangeFox86/DreamPicoPort).
+- **Pin-outs and default mappings** — See [GPIO Output Pin-Out and Mappings](Firmware/RP2040/docs/GPIO_Output_Pinout_and_Mappings.md) for pin numbers (PS1/PS2, Dreamcast, GameCube, N64) and default button/stick mappings for each mode.
+- **Bluetooth input for PS1/PS2, GameCube, Dreamcast, and N64** — On **Pico W** (or Pico 2 W), you can use a **Bluetooth controller** as input while outputting to PS1, PS2, GameCube, Dreamcast, or N64. Select the mode (**Start + B**, **Start + X**, **Start + Y**, or **Start + Right Bumper**) as usual; pair your BT gamepad; the console sees the adapter as a controller. Wiring is the same for each mode (PS1/PS2: DATA/CMD/ATT/CLK/ACK; GameCube/N64: DATA=GP19 + GND; Dreamcast: GP10/GP11).
+- **GPIO input from real PS1/PS2, GameCube, N64, or Dreamcast controllers** — You can use a **real wired PS1/PS2, GameCube, N64, or Dreamcast controller** as the adapter’s input in two ways: (1) **Output to other consoles (Switch, Xbox, DInput, etc.):** set output mode (e.g. **Start + D-pad Down** for Switch), then hold **Start + Select** for ~2.5 s until the input source cycles to **PSX GPIO**, **GameCube GPIO**, **Dreamcast GPIO**, or **N64 GPIO**; plug the real controller into the GPIO pins and connect the adapter’s USB to the target console. (2) **Output to PS1/PS2, GameCube, or Dreamcast:** in that output mode, hold **Start + Select** to set input to the matching GPIO and plug in the real controller (same pins). **Wiring:** PS1/PS2: DATA=GP19, CMD=GP20, ATT=GP21, CLK=GP22; GameCube/N64: DATA=GP19 + GND; Dreamcast: GP10, GP11. _PSX host, JoyBus host, N64 host ported from [PicoGamepadConverter](https://github.com/Loc15/PicoGamepadConverter)._
 
 ### Version 1.0.0.5a
 - **Switch Pro emulation** — Switch output mode now emulates a **Nintendo Switch Pro Controller** over USB (report format, subcommands, init handshake). Face-button and report layout follow the standard Pro Controller protocol (bit layout aligned with hardware/reference). _Switch Pro protocol and button report layout reference: [retro-pico-switch](https://github.com/DavidPagels/retro-pico-switch) (N64/GameCube → Pico → Switch); Bluepad32 Switch parser used for validation._
@@ -147,8 +169,8 @@ Note: These features have been added to the Pico W/ Pico 2 W firmware support, I
 ## Planned additions for this fork
 - **Web app bindings for OG Xbox mode** — Allow users to rebind the Guide tap (Start) and the IGR/shutdown hold combos (e.g. which button triggers 1 s soft IGR or 3 s shutdown) via the web app.
 - Output to the following consoles:
-      - GameCube
-      - PS2
+      - ~~PS2~~ (done: PS1/PS2 GPIO mode, see changelog)
+      - ~~GameCube~~ (done: GameCube GPIO mode, see changelog)
       - DreamCast
       - NES
       - SNES

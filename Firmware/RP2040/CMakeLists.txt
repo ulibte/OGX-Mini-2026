@@ -70,6 +70,13 @@ set(SOURCES_BOARD
     ${SRC}/USBDevice/DeviceDriver/Switch/Switch.cpp
     ${SRC}/USBDevice/DeviceDriver/WiiU/WiiU.cpp
     ${SRC}/USBDevice/DeviceDriver/Wii/Wii.cpp
+    ${SRC}/USBDevice/DeviceDriver/PS1PS2/PS1PS2.cpp
+    ${SRC}/USBDevice/DeviceDriver/PS1PS2/controller_simulator.c
+    ${SRC}/USBDevice/DeviceDriver/GameCube/GameCube.cpp
+    ${SRC}/USBDevice/DeviceDriver/GameCube/gamecube_device.c
+    ${SRC}/USBDevice/DeviceDriver/Dreamcast/Dreamcast.cpp
+    ${SRC}/USBDevice/DeviceDriver/N64/N64.cpp
+    ${SRC}/USBDevice/DeviceDriver/N64/n64_device.c
     ${SRC}/USBDevice/DeviceDriver/XInput/XInput.cpp
     ${SRC}/USBDevice/DeviceDriver/XboxOG/XboxOG_GP.cpp
     ${SRC}/USBDevice/DeviceDriver/XboxOG/XboxOG_SB.cpp
@@ -78,6 +85,12 @@ set(SOURCES_BOARD
     ${SRC}/USBDevice/DeviceDriver/WebApp/WebApp.cpp
     ${SRC}/USBDevice/DeviceDriver/XInput/tud_xinput/tud_xinput.cpp
     ${SRC}/USBDevice/DeviceDriver/XboxOG/tud_xid/tud_xid.cpp
+
+    ${SRC}/USBHost/GPIOHost/GPIOHost.cpp
+    ${SRC}/USBHost/GPIOHost/psx_host/psx_host.c
+    ${SRC}/USBHost/GPIOHost/joybus_host/joybus_controller.c
+    ${SRC}/USBHost/GPIOHost/joybus_host/n64_host.c
+    ${SRC}/USBHost/GPIOHost/dreamcast_host/MapleBus.cpp
     # libxsm3 for Xbox 360 (XSM3) authentication in XInput mode
     ${EXTERNAL_DIR}/libxsm3/xsm3.c
     ${EXTERNAL_DIR}/libxsm3/usbdsec.c
@@ -501,6 +514,15 @@ target_compile_definitions(${FW_NAME} PRIVATE XSM3_NO_DEBUGGING=1 XSM3_EMBEDDED=
 if(EN_RGB)
     pico_generate_pio_header(${FW_NAME} ${SRC}/Board/Pico_WS2812/WS2812.pio)
 endif()
+pico_generate_pio_header(${FW_NAME} ${SRC}/USBDevice/DeviceDriver/PS1PS2/psxSPI.pio)
+pico_generate_pio_header(${FW_NAME} ${SRC}/USBDevice/DeviceDriver/GameCube/joybus.pio)
+pico_generate_pio_header(${FW_NAME} ${SRC}/USBDevice/DeviceDriver/N64/n64send.pio)
+pico_generate_pio_header(${FW_NAME} ${SRC}/USBHost/GPIOHost/psx_host/clock.pio)
+pico_generate_pio_header(${FW_NAME} ${SRC}/USBHost/GPIOHost/joybus_host/controller.pio)
+pico_generate_pio_header(${FW_NAME} ${SRC}/USBHost/GPIOHost/dreamcast_host/maple_in.pio)
+pico_generate_pio_header(${FW_NAME} ${SRC}/USBHost/GPIOHost/dreamcast_host/maple_out.pio)
+
+target_include_directories(${FW_NAME} PRIVATE ${SRC}/USBHost/GPIOHost/dreamcast_host)
 
 include_directories(${INC_DIRS_BOARD})
 

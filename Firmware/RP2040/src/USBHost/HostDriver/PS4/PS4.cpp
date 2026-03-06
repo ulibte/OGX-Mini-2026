@@ -21,6 +21,7 @@ void PS4Host::process_report(Gamepad& gamepad, uint8_t address, uint8_t instance
     in_report_.buttons[2] &= PS4::COUNTER_MASK;
     if (std::memcmp(reinterpret_cast<const PS4::InReport*>(report), &prev_in_report_, sizeof(PS4::InReport)) == 0)
     {
+        tuh_hid_receive_report(address, instance);
         return;
     }
 

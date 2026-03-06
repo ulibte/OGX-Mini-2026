@@ -24,6 +24,10 @@ namespace ButtonCombo {
     static constexpr uint32_t XBOXOG_SB = BUTTON_COMBO(Gamepad::BUTTON_START | Gamepad::BUTTON_RB, Gamepad::DPAD_RIGHT);
     static constexpr uint32_t XBOXOG_XR = BUTTON_COMBO(Gamepad::BUTTON_START | Gamepad::BUTTON_LB, Gamepad::DPAD_RIGHT);
     static constexpr uint32_t PSCLASSIC = BUTTON_COMBO(Gamepad::BUTTON_START | Gamepad::BUTTON_A);
+    static constexpr uint32_t PS1PS2    = BUTTON_COMBO(Gamepad::BUTTON_START | Gamepad::BUTTON_B);
+    static constexpr uint32_t GAMECUBE  = BUTTON_COMBO(Gamepad::BUTTON_START | Gamepad::BUTTON_X);
+    static constexpr uint32_t DREAMCAST = BUTTON_COMBO(Gamepad::BUTTON_START | Gamepad::BUTTON_Y);
+    static constexpr uint32_t N64       = BUTTON_COMBO(Gamepad::BUTTON_START | Gamepad::BUTTON_RB);
     static constexpr uint32_t WEBAPP    = BUTTON_COMBO(Gamepad::BUTTON_START | Gamepad::BUTTON_LB | Gamepad::BUTTON_RB);
     // WII is build-option only (OGXM_FIXED_DRIVER=WII), not in combo map
 };
@@ -58,7 +62,11 @@ static constexpr DeviceDriverType VALID_DRIVER_TYPES[] = {
     DeviceDriverType::WII,
     DeviceDriverType::WEBAPP,
     DeviceDriverType::PS3,
-    DeviceDriverType::PSCLASSIC, 
+    DeviceDriverType::PSCLASSIC,
+    DeviceDriverType::PS1PS2,
+    DeviceDriverType::GAMECUBE,
+    DeviceDriverType::DREAMCAST,
+    DeviceDriverType::N64,
     DeviceDriverType::XINPUT,
     #if defined(XREMOTE_ROM_AVAILABLE)
     DeviceDriverType::XBOXOG_XR,
@@ -72,7 +80,7 @@ struct ComboMap {
     DeviceDriverType driver; 
 };
 
-static constexpr std::array<ComboMap, 10> BUTTON_COMBO_MAP = {{
+static constexpr std::array<ComboMap, 14> BUTTON_COMBO_MAP = {{
     { ButtonCombo::XBOXOG,    DeviceDriverType::XBOXOG    },
     { ButtonCombo::XBOXOG_SB, DeviceDriverType::XBOXOG_SB },
     { ButtonCombo::XBOXOG_XR, DeviceDriverType::XBOXOG_XR },
@@ -82,7 +90,11 @@ static constexpr std::array<ComboMap, 10> BUTTON_COMBO_MAP = {{
     { ButtonCombo::WIIU,      DeviceDriverType::WIIU      },
     { ButtonCombo::XINPUT,    DeviceDriverType::XINPUT    },
     { ButtonCombo::PS3,       DeviceDriverType::PS3       },
-    { ButtonCombo::PSCLASSIC, DeviceDriverType::PSCLASSIC }
+    { ButtonCombo::PSCLASSIC, DeviceDriverType::PSCLASSIC },
+    { ButtonCombo::PS1PS2,    DeviceDriverType::PS1PS2    },
+    { ButtonCombo::GAMECUBE,  DeviceDriverType::GAMECUBE  },
+    { ButtonCombo::DREAMCAST, DeviceDriverType::DREAMCAST },
+    { ButtonCombo::N64,       DeviceDriverType::N64       }
 }};
 
 const std::string UserSettings::INIT_FLAG_KEY()
@@ -103,6 +115,11 @@ const std::string UserSettings::ACTIVE_PROFILE_KEY(const uint8_t index)
 const std::string UserSettings::DRIVER_TYPE_KEY()
 {
     return std::string("driver_type");
+}
+
+const std::string UserSettings::INPUT_SOURCE_KEY()
+{
+    return std::string("input_source");
 }
 
 const std::string UserSettings::DATETIME_KEY()
@@ -372,6 +389,91 @@ DeviceDriverType UserSettings::get_current_driver()
 #endif  // !(CONFIG_OGXM_FIXED_DRIVER && !CONFIG_OGXM_FIXED_DRIVER_ALLOW_COMBOS)
 }
 
+HostInputSource UserSettings::get_input_source()
+{
+    if (!input_source_loaded_)
+    {
+        uint8_t stored = 0;
+        if (nvs_tool_.read(INPUT_SOURCE_KEY(), &stored, sizeof(uint8_t)) && stored <= 3)
+        {
+            current_input_source_ = static_cast<HostInputSource>(stored);
+        }
+        input_source_loaded_ = true;
+    }
+    return current_input_source_;
+}
+
+void UserSettings::store_input_source(HostInputSource source)
+{
+    uint8_t v = static_cast<uint8_t>(source);
+    nvs_tool_.write(INPUT_SOURCE_KEY(), &v, sizeof(uint8_t));
+    current_input_source_ = source;
+    input_source_loaded_ = true;
+}
+
+static constexpr uint32_t INPUT_SOURCE_COMBO = BUTTON_COMBO(Gamepad::BUTTON_START | Gamepad::BUTTON_BACK, 0);
+static constexpr unsigned INPUT_SOURCE_CHECK_COUNT = 2500 / 600;  /* 2.5s hold to cycle input source */
+
+bool UserSettings::check_for_input_source_change(Gamepad& gamepad)
+{
+    Gamepad::PadIn gp = gamepad.get_pad_in();
+    uint32_t combo = BUTTON_COMBO(gp.buttons, gp.dpad);
+    static uint32_t last_combo = 0;
+    static uint8_t hold_count = 0;
+
+    if (combo != INPUT_SOURCE_COMBO)
+    {
+        last_combo = combo;
+        hold_count = 0;
+        return false;
+    }
+    if (last_combo != INPUT_SOURCE_COMBO)
+    {
+        hold_count = 0;
+    }
+    last_combo = INPUT_SOURCE_COMBO;
+    ++hold_count;
+    if (hold_count < INPUT_SOURCE_CHECK_COUNT)
+    {
+        return false;
+    }
+    hold_count = 0;
+    DeviceDriverType dr = get_current_driver();
+    HostInputSource cur = get_input_source();
+    HostInputSource next = HostInputSource::USB;
+    if (dr == DeviceDriverType::PS1PS2)
+    {
+        next = (cur == HostInputSource::USB) ? HostInputSource::PSX_GPIO : HostInputSource::USB;
+    }
+    else if (dr == DeviceDriverType::GAMECUBE)
+    {
+        next = (cur == HostInputSource::USB) ? HostInputSource::GAMECUBE_GPIO : HostInputSource::USB;
+    }
+    else if (dr == DeviceDriverType::DREAMCAST)
+    {
+        next = (cur == HostInputSource::USB) ? HostInputSource::DREAMCAST_GPIO : HostInputSource::USB;
+    }
+    else
+    {
+        /* Any other output (Switch, DInput, Xbox, etc.): cycle USB -> PSX_GPIO -> GAMECUBE_GPIO -> DREAMCAST_GPIO -> N64_GPIO -> USB */
+        if (cur == HostInputSource::USB)
+            next = HostInputSource::PSX_GPIO;
+        else if (cur == HostInputSource::PSX_GPIO)
+            next = HostInputSource::GAMECUBE_GPIO;
+        else if (cur == HostInputSource::GAMECUBE_GPIO)
+            next = HostInputSource::DREAMCAST_GPIO;
+        else if (cur == HostInputSource::DREAMCAST_GPIO)
+            next = HostInputSource::N64_GPIO;
+        else if (cur == HostInputSource::N64_GPIO)
+            next = HostInputSource::USB;
+        else
+            next = HostInputSource::USB;
+    }
+    store_input_source(next);
+    OGXM_LOG("Input source changed to " + std::to_string(static_cast<uint8_t>(next)) + "\n");
+    return true;
+}
+
 void UserSettings::write_datetime()
 {
     nvs_tool_.write(DATETIME_KEY(), DATETIME_TAG.c_str(), DATETIME_TAG.size() + 1);
@@ -410,6 +512,9 @@ void UserSettings::initialize_flash()
 
     uint8_t device_mode_buffer = static_cast<uint8_t>(DEFAULT_DRIVER());
     nvs_tool_.write(DRIVER_TYPE_KEY(), &device_mode_buffer, sizeof(uint8_t));
+
+    uint8_t input_source_buffer = static_cast<uint8_t>(HostInputSource::USB);
+    nvs_tool_.write(INPUT_SOURCE_KEY(), &input_source_buffer, sizeof(uint8_t));
 
     OGXM_LOG("Writing default profile ids\n");
 

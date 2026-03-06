@@ -10,6 +10,8 @@
 
 #include "Board/Config.h"
 #include "Board/ogxm_log.h"
+#include "UserSettings/UserSettings.h"
+#include "USBDevice/DeviceDriver/DeviceDriverTypes.h"
 #include "USBHost/HardwareIDs.h"
 
 #if defined(CONFIG_OGXM_DEBUG)
@@ -328,19 +330,35 @@ private:
 
 	inline uint8_t find_free_gamepad()
 	{
-		uint8_t count = 0;
-
+		bool used[MAX_GAMEPADS] = {false};
+		UserSettings& us = UserSettings::get_instance();
+		DeviceDriverType dr = us.get_current_driver();
+		HostInputSource src = us.get_input_source();
+		if ((dr == DeviceDriverType::PS1PS2 && src == HostInputSource::PSX_GPIO) ||
+		    (dr == DeviceDriverType::GAMECUBE && src == HostInputSource::GAMECUBE_GPIO) ||
+		    (dr == DeviceDriverType::DREAMCAST && src == HostInputSource::DREAMCAST_GPIO) ||
+		    (src == HostInputSource::N64_GPIO))
+		{
+			used[0] = true;
+		}
 		for (auto& device_slot : device_slots_)
 		{
 			for (auto& interface : device_slot.interfaces)
 			{
 				if (interface.gamepad_idx != INVALID_IDX)
 				{
-					++count;
+					used[interface.gamepad_idx] = true;
 				}
 			}
 		}
-		return (count < MAX_GAMEPADS) ? count : INVALID_IDX;
+		for (uint8_t i = 0; i < MAX_GAMEPADS; ++i)
+		{
+			if (!used[i])
+			{
+				return i;
+			}
+		}
+		return INVALID_IDX;
 	}
 
 	inline uint8_t get_device_slot(uint8_t address)

@@ -36,9 +36,24 @@ btstack_timer_source_t led_timer_;
 bool led_timer_set_{false};
 bool feedback_timer_set_{false};
 
+static constexpr uint32_t GPIO_PROCESS_INTERVAL_MS = 4;
+static btstack_timer_source_t gpio_process_timer_;
+static void (*gpio_process_cb_)(void*) = nullptr;
+static void* gpio_process_ctx_ = nullptr;
+
+static void gpio_process_timer_cb(btstack_timer_source_t* ts) {
+    if (gpio_process_cb_ != nullptr && gpio_process_ctx_ != nullptr) {
+        gpio_process_cb_(gpio_process_ctx_);
+    }
+    btstack_run_loop_set_timer(ts, GPIO_PROCESS_INTERVAL_MS);
+    btstack_run_loop_add_timer(ts);
+}
+
 // PS5: touchpad click toggles adaptive triggers (per-controller state)
 static bool adaptive_trigger_enabled_[MAX_GAMEPADS]{false};
 static bool prev_touchpad_clicked_[MAX_GAMEPADS]{false};
+// Defer sending adaptive trigger effect out of BT callback to avoid l2cap_send in callback (reduces input lag)
+static bool pending_adaptive_trigger_send_[MAX_GAMEPADS]{false};
 
 bool any_connected()
 {
@@ -187,6 +202,7 @@ static void device_disconnected_cb(uni_hid_device_t* device) {
 
     bt_devices_[idx].connected = false;
     prev_touchpad_clicked_[idx] = false;
+    pending_adaptive_trigger_send_[idx] = false;
     bt_devices_[idx].gamepad->reset_pad_in();
 
     if (!led_timer_set_ && !any_connected()) {
@@ -257,24 +273,6 @@ static void controller_data_cb(uni_hid_device_t* device, uni_controller_t* contr
 
     uni_gamepad_t *uni_gp = &controller->gamepad;
     int idx = uni_hid_device_get_idx_for_instance(device);
-
-    // PS5: capture/mute button toggles adaptive triggers (touchpad click not in Bluepad32 misc_buttons)
-    if (device->controller_type == CONTROLLER_TYPE_PS5Controller && idx >= 0 && idx < static_cast<int>(MAX_GAMEPADS)) {
-        bool touchpad_clicked = (uni_gp->misc_buttons & MISC_BUTTON_CAPTURE) != 0;
-        if (touchpad_clicked && !prev_touchpad_clicked_[idx]) {
-            adaptive_trigger_enabled_[idx] = !adaptive_trigger_enabled_[idx];
-            if (adaptive_trigger_enabled_[idx]) {
-                ds5_adaptive_trigger_effect_t on = ds5_new_adaptive_trigger_effect_feedback(5, 4);
-                ds5_set_adaptive_trigger_effect(device, UNI_ADAPTIVE_TRIGGER_TYPE_LEFT, &on);
-                ds5_set_adaptive_trigger_effect(device, UNI_ADAPTIVE_TRIGGER_TYPE_RIGHT, &on);
-            } else {
-                ds5_adaptive_trigger_effect_t off = ds5_new_adaptive_trigger_effect_off();
-                ds5_set_adaptive_trigger_effect(device, UNI_ADAPTIVE_TRIGGER_TYPE_LEFT, &off);
-                ds5_set_adaptive_trigger_effect(device, UNI_ADAPTIVE_TRIGGER_TYPE_RIGHT, &off);
-            }
-        }
-        prev_touchpad_clicked_[idx] = touchpad_clicked;
-    }
 
 #if BLUEPAD32_UART_LOG_INPUT
     {
@@ -393,6 +391,16 @@ static void controller_data_cb(uni_hid_device_t* device, uni_controller_t* contr
 
     gamepad->set_pad_in(gp_in);
 
+    // PS5: defer adaptive trigger send to main loop so callback never does l2cap_send (reduces input lag)
+    if (device->controller_type == CONTROLLER_TYPE_PS5Controller && idx >= 0 && idx < static_cast<int>(MAX_GAMEPADS)) {
+        bool touchpad_clicked = (uni_gp->misc_buttons & MISC_BUTTON_CAPTURE) != 0;
+        if (touchpad_clicked && !prev_touchpad_clicked_[idx]) {
+            adaptive_trigger_enabled_[idx] = !adaptive_trigger_enabled_[idx];
+            pending_adaptive_trigger_send_[idx] = true;
+        }
+        prev_touchpad_clicked_[idx] = touchpad_clicked;
+    }
+
 #if BLUEPAD32_UART_LOG_INPUT
     if (idx >= 0 && idx < static_cast<int>(MAX_GAMEPADS)) {
         std::memcpy(&prev_uni_gp[idx], uni_gp, sizeof(uni_gamepad_t));
@@ -403,6 +411,27 @@ static void controller_data_cb(uni_hid_device_t* device, uni_controller_t* contr
 const uni_property_t* get_property_cb(uni_property_idx_t idx) 
 {
     return nullptr;
+}
+
+void process_pending_adaptive_triggers()
+{
+    for (uint8_t i = 0; i < MAX_GAMEPADS; ++i) {
+        if (!pending_adaptive_trigger_send_[i])
+            continue;
+        pending_adaptive_trigger_send_[i] = false;
+        uni_hid_device_t* device = uni_hid_device_get_instance_for_idx(static_cast<int>(i));
+        if (!device || device->controller_type != CONTROLLER_TYPE_PS5Controller)
+            continue;
+        if (adaptive_trigger_enabled_[i]) {
+            ds5_adaptive_trigger_effect_t on = ds5_new_adaptive_trigger_effect_feedback(5, 4);
+            ds5_set_adaptive_trigger_effect(device, UNI_ADAPTIVE_TRIGGER_TYPE_LEFT, &on);
+            ds5_set_adaptive_trigger_effect(device, UNI_ADAPTIVE_TRIGGER_TYPE_RIGHT, &on);
+        } else {
+            ds5_adaptive_trigger_effect_t off = ds5_new_adaptive_trigger_effect_off();
+            ds5_set_adaptive_trigger_effect(device, UNI_ADAPTIVE_TRIGGER_TYPE_LEFT, &off);
+            ds5_set_adaptive_trigger_effect(device, UNI_ADAPTIVE_TRIGGER_TYPE_RIGHT, &off);
+        }
+    }
 }
 
 uni_platform* get_driver() 
@@ -425,6 +454,11 @@ uni_platform* get_driver()
 
 //Public API
 
+void set_gpio_device_process_callback(void (*callback)(void* ctx), void* ctx) {
+    gpio_process_cb_ = callback;
+    gpio_process_ctx_ = ctx;
+}
+
 void init(Gamepad(&gamepads)[MAX_GAMEPADS])
 {
     for (uint8_t i = 0; i < MAX_GAMEPADS; ++i)
@@ -440,6 +474,13 @@ void init(Gamepad(&gamepads)[MAX_GAMEPADS])
     led_timer_.context = nullptr;
     btstack_run_loop_set_timer(&led_timer_, LED_CHECK_TIME_MS);
     btstack_run_loop_add_timer(&led_timer_);
+
+    if (gpio_process_cb_ != nullptr) {
+        gpio_process_timer_.process = gpio_process_timer_cb;
+        gpio_process_timer_.context = nullptr;
+        btstack_run_loop_set_timer(&gpio_process_timer_, GPIO_PROCESS_INTERVAL_MS);
+        btstack_run_loop_add_timer(&gpio_process_timer_);
+    }
 }
 
 void run_task(Gamepad(&gamepads)[MAX_GAMEPADS])

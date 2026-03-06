@@ -12,8 +12,15 @@
 #include "bsp/board_api.h"
 
 #include "USBDevice/DeviceManager.h"
+#include "USBDevice/DeviceDriver/DeviceDriver.h"
 #include "USBDevice/DeviceDriver/DeviceDriverTypes.h"
+#include "USBDevice/DeviceDriver/PS1PS2/psx_simulator.h"
+#include "USBDevice/DeviceDriver/GameCube/gc_simulator.h"
+#include "USBDevice/DeviceDriver/Dreamcast/Dreamcast.h"
+#include "USBDevice/DeviceDriver/N64/N64.h"
+#include "USBHost/GPIOHost/GPIOHost.h"
 #include "UserSettings/UserSettings.h"
+#include "Board/Config.h"
 #include "Board/board_api.h"
 #include "Board/ogxm_log.h"
 #include "Bluepad32/Bluepad32.h"
@@ -45,6 +52,27 @@ extern "C" void wii_led_off(void) { board_api::set_led(false); }
 #endif
 
 Gamepad _gamepads[MAX_GAMEPADS];
+
+static DeviceDriver* s_gpio_device_driver = nullptr;
+static void gpio_device_process_cb(void* ctx) {
+    (void)ctx;
+    if (s_gpio_device_driver) {
+        HostInputSource input_src = UserSettings::get_instance().get_input_source();
+        if (input_src == HostInputSource::PSX_GPIO) {
+            GPIOHost::psx_host_poll(_gamepads[0]);
+        } else if (input_src == HostInputSource::GAMECUBE_GPIO) {
+            GPIOHost::joybus_host_poll(_gamepads[0]);
+        } else if (input_src == HostInputSource::DREAMCAST_GPIO) {
+            GPIOHost::dreamcast_host_poll(_gamepads[0]);
+        } else if (input_src == HostInputSource::N64_GPIO) {
+            GPIOHost::n64_host_poll(_gamepads[0]);
+        }
+        for (uint8_t i = 0; i < MAX_GAMEPADS; ++i) {
+            s_gpio_device_driver->process(i, _gamepads[i]);
+        }
+        bluepad32::process_pending_adaptive_triggers();
+    }
+}
 
 #if defined(CONFIG_EN_USB_HOST)
 constexpr uint32_t FEEDBACK_DELAY_MS = 200;
@@ -172,8 +200,10 @@ void pico_w::run() {
 
     UserSettings& user_settings = UserSettings::get_instance();
     DeviceDriver* device_driver = DeviceManager::get_instance().get_driver();
-    const bool wii_mode = (user_settings.get_current_driver() == DeviceDriverType::WII);
-    OGXM_LOG("PicoW run: wii_mode=" + std::string(wii_mode ? "1" : "0") + "\n");
+    DeviceDriverType current_driver = user_settings.get_current_driver();
+    const bool wii_mode = (current_driver == DeviceDriverType::WII);
+    const bool gpio_device_mode = (current_driver == DeviceDriverType::PS1PS2 || current_driver == DeviceDriverType::GAMECUBE || current_driver == DeviceDriverType::DREAMCAST);
+    OGXM_LOG("PicoW run: wii_mode=" + std::string(wii_mode ? "1" : "0") + " gpio_device_mode=" + std::string(gpio_device_mode ? "1" : "0") + "\n");
 
 #if defined(CONFIG_EN_USB_HOST)
     if (wii_mode) {
@@ -185,11 +215,52 @@ void pico_w::run() {
         wiimote_emulator(&s_wiimote_report);  // never returns: BT run loop, LED blinks until connected
     } else
 #endif
-    {
+    if (gpio_device_mode) {
+        OGXM_LOG("PicoW run: GPIO device mode (PS1/PS2 or GameCube), Core1 = protocol, Core0 = BT\n");
+        HostInputSource input_src = user_settings.get_input_source();
+        if (current_driver == DeviceDriverType::DREAMCAST) {
+            dreamcast_set_core1_device_mode(input_src != HostInputSource::DREAMCAST_GPIO);
+        }
+        if (current_driver == DeviceDriverType::PS1PS2) {
+            multicore_launch_core1(psx_device_main);
+        } else if (current_driver == DeviceDriverType::GAMECUBE) {
+            multicore_launch_core1(gamecube_core1_entry);
+        } else if (current_driver == DeviceDriverType::N64) {
+            multicore_launch_core1(n64_core1_entry);
+        } else {
+            multicore_launch_core1(dreamcast_core1_entry);
+        }
+        s_gpio_device_driver = device_driver;
+        if (input_src == HostInputSource::PSX_GPIO) {
+            GPIOHost::psx_host_init(0, 20, 19);
+        } else if (input_src == HostInputSource::GAMECUBE_GPIO) {
+            GPIOHost::joybus_host_init(0, 19);
+        } else if (input_src == HostInputSource::DREAMCAST_GPIO) {
+            GPIOHost::dreamcast_host_init(1, 0, 10, -1);
+        } else if (input_src == HostInputSource::N64_GPIO) {
+            GPIOHost::n64_host_init(0, 19);
+        }
+        bluepad32::set_gpio_device_process_callback(gpio_device_process_cb, nullptr);
+        board_api::init_bluetooth();
+        board_api::set_led(true);
+        BLEServer::init_server(_gamepads);
+        bluepad32::run_task(_gamepads);  // never returns: BT run loop + process timer
+    } else {
         tud_init(BOARD_TUD_RHPORT);
         OGXM_LOG("PicoW run: tud_init done, launching Core1 (BT)\n");
         multicore_launch_core1(core1_task);
         OGXM_LOG("PicoW run: Core1 (BT) launched\n");
+
+        HostInputSource input_src = user_settings.get_input_source();
+        if (input_src == HostInputSource::PSX_GPIO) {
+            GPIOHost::psx_host_init(0, 20, 19);
+        } else if (input_src == HostInputSource::GAMECUBE_GPIO) {
+            GPIOHost::joybus_host_init(0, 19);
+        } else if (input_src == HostInputSource::DREAMCAST_GPIO) {
+            GPIOHost::dreamcast_host_init(1, 0, 10, -1);
+        } else if (input_src == HostInputSource::N64_GPIO) {
+            GPIOHost::n64_host_init(0, 19);
+        }
     }
 
     uint32_t tid_gp_check = TaskQueue::Core0::get_new_task_id();
@@ -200,11 +271,23 @@ void pico_w::run() {
     static uint32_t loop_count = 0;
     while (true) {
         TaskQueue::Core0::process_tasks();
-        if (!wii_mode)
+        if (!wii_mode) {
             tud_task();
+            HostInputSource input_src = UserSettings::get_instance().get_input_source();
+            if (input_src == HostInputSource::PSX_GPIO) {
+                GPIOHost::psx_host_poll(_gamepads[0]);
+            } else if (input_src == HostInputSource::GAMECUBE_GPIO) {
+                GPIOHost::joybus_host_poll(_gamepads[0]);
+            } else if (input_src == HostInputSource::DREAMCAST_GPIO) {
+                GPIOHost::dreamcast_host_poll(_gamepads[0]);
+            } else if (input_src == HostInputSource::N64_GPIO) {
+                GPIOHost::n64_host_poll(_gamepads[0]);
+            }
+        }
         for (uint8_t i = 0; i < MAX_GAMEPADS; ++i) {
             device_driver->process(i, _gamepads[i]);
         }
+        bluepad32::process_pending_adaptive_triggers();
         if (!wii_mode) {
             if (tud_mounted() && !mounted_logged) {
                 mounted_logged = true;

@@ -26,6 +26,8 @@ std::ostream& operator<<(std::ostream& os, DeviceDriverType type) {
         case DeviceDriverType::SWITCH:        os << "SWITCH"; break;
         case DeviceDriverType::WIIU:          os << "WIIU"; break;
         case DeviceDriverType::WII:           os << "WII"; break;
+        case DeviceDriverType::PS1PS2:        os << "PS1PS2"; break;
+        case DeviceDriverType::GAMECUBE:      os << "GAMECUBE"; break;
         case DeviceDriverType::WEBAPP:        os << "WEBAPP"; break;
         case DeviceDriverType::UART_BRIDGE:   os << "UART_BRIDGE"; break;
         default:                              os << "UNKNOWN"; break;
