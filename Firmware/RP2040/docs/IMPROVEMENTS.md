@@ -31,6 +31,13 @@ Improvements and fixes applied to the OGX-Mini RP2040 firmware in this project.
 4. **Control handling**
    - Vendor and class control requests are forwarded to the active driver so XSM3 traffic reaches the XInput handler.
 
+5. **Wake console from standby (remote wakeup)**
+   - When the Xbox 360 has been turned off via **Guide → Turn off console** (not the front power button), the console may keep USB power and put the bus in suspend. The adapter can then wake the console by signaling USB remote wakeup when you:
+     - **Press Guide (Home)** on the controller, or
+     - **Hold Start for 3 seconds** (avoids holding Guide on Xbox One/PS5 pads, which can turn the controller off).
+   - Remote wakeup is advertised in the configuration descriptor; the stack defaults it enabled when supported so wake works even if the host did not send SET_FEATURE before standby.
+   - **Disclaimer:** Wake only works when the console was previously powered on with the adapter connected and then turned off via the controller (soft shutdown). It **cannot** power on the console from a cold start—e.g. if the console was just plugged in, lost power completely, or was turned off with the front power button. In those cases use the console’s power button to turn it on first.
+
 Descriptors and XSM3 flow are aligned with [joypad-os](https://github.com/joypad-ai/joypad-os); a local comparison doc may be kept out of the repo for reference.
 
 ---
@@ -71,6 +78,11 @@ Descriptors and XSM3 flow are aligned with [joypad-os](https://github.com/joypad
    - **PS button latch:** When `BUTTON_SYS` is set, the driver latches the PS bit for 8 consecutive report frames so short taps are not missed by timing. `buttons[2]` bit 0 (PS) and bit 1 (Touchpad) are set from `BUTTON_SYS` and `BUTTON_MISC`.
    - If Home does not work over Bluetooth, try a wired controller (some consoles only react to the first controller's Home).
 
+6. **Wake console from standby (remote wakeup)**
+   - The configuration descriptor now advertises **remote wakeup** (`bmAttributes` 0xA0) so the PS3 can suspend the USB bus in standby and the adapter can signal wake. When the console is in standby (turned off via **PS button → Turn off system** or similar, not full power loss), you can wake it by **pressing PS (Home)** or **holding Start for 3 seconds**—**only if the console keeps USB power when off**.
+   - **Many PS3s cut power to the USB ports** when shut down, so the adapter and controller disconnect and wake is not possible. If your controller stays powered (e.g. charging LED) when the PS3 is off, that model may keep USB in standby and wake may work. Same disclaimer as 360: no wake from cold start; use the console power button first if needed.
+   - **Recovery Mode:** Even when wake from standby is not possible (e.g. console cuts USB when off), the adapter is **confirmed working in PS3 Recovery Mode** — you can use it to navigate and select options in Recovery.
+
 ---
 
 ## Latency reduction
@@ -106,12 +118,11 @@ Same goal as Switch Pro and PS3: the only added latency when using a wireless co
 
 Both modes: no `new_pad_in()` gate; main loop runs with `MAIN_LOOP_DELAY_US=0` by default; `tud_task()` runs before `process()` so the endpoint is ready when we try to send.
 
-### Xbox OG (Duke) gamepad: report always fresh; send when ready (minimal latency)
+### Xbox OG (Duke) gamepad: send only on new input (stability on real hardware)
 
-Same goal as XInput/PS3: reduce input delay when using e.g. a DualShock (DS3/DS4/DualSense) as input while outputting to Original Xbox.
+On the Original Xbox, sending a report every poll cycle caused **random disconnects**. The driver was reverted to **only** build and send the HID report when `gamepad.new_pad_in()` is true (v1.0.0a5 behaviour). Rumble handling is unchanged. This differs from XInput/PS3/Switch, which send every loop; the OG Xbox console is sensitive to report timing and the “send when new input” rule avoids disconnects while keeping input responsive.
 
-- **Every** `process()` call: read `get_pad_in()`, build `in_report_` (buttons, triggers, sticks, SYS hold logic), then call `tud_xid::send_report()` when `send_report_ready(0)`. No `new_pad_in()` gate. The XID layer’s `ep_in_buffer` (used for GET_REPORT and interrupt IN) is updated every loop so the console always sees the latest state.
-- **File:** `src/USBDevice/DeviceDriver/XboxOG/XboxOG_GP.cpp` — `process()` always builds and sends when ready; previously it only updated when `new_pad_in()`, which added one poll period or more of latency.
+- **File:** `src/USBDevice/DeviceDriver/XboxOG/XboxOG_GP.cpp` — `process()` builds `in_report_` and calls `tud_xid::send_report()` only when `new_pad_in()` and `send_report_ready(0)`.
 
 **DualSense (PS5) input when outputting to OG Xbox:** The PS5 USB host no longer skips reports that are byte-identical to the previous one. Previously, “unchanged” reports did not call `set_pad_in()`, so with a polled output (OG Xbox) some transitions or sustained input could be dropped when the host loop was slower than the DualSense report rate. Every DualSense report is now pushed into the gamepad queue so the OG Xbox device always has the latest state. **File:** `src/USBHost/HostDriver/PS5/PS5.cpp` — removed the unchanged-report early return; every report is parsed and passed to `gamepad.set_pad_in()`.
 
@@ -120,6 +131,16 @@ Same goal as XInput/PS3: reduce input delay when using e.g. a DualShock (DS3/DS4
 The main loop now calls **`tud_task()` before** `device_driver->process()`. That way the USB stack updates completion status of the previous IN transfer first; then `process()` sees the endpoint as ready and can send the next report immediately with the latest gamepad state. Reduces latency by up to one main-loop iteration (avoids sending only every other loop when the host polls frequently).
 
 **Files:** `src/OGXMini/Board/PicoW.cpp`, `Standard.cpp`, `Four_Channel_I2C.cpp` — order is `process_tasks()` → `tud_task()` → `process()` for each gamepad.
+
+---
+
+## PS2 (GPIO) / Open PS2 Loader stability
+
+**Issue:** With a “primed” first response byte (0xFF) before the mode byte, Open PS2 Loader could hang at startup (black screen) when the adapter was connected.
+
+**Fix:** The PS2 controller (device) response was reverted so the **first response byte is the mode byte** (no leading 0xFF). Protocol and escape-mode response lengths otherwise follow PicoGamepadConverter and DS4toPS2. The main loop drains all pending PS2 transactions each tick so rapid pad init (e.g. OPL at boot) does not desync. Core1 runs Bluetooth when used; Core0 runs the main loop and `psx_device_poll()` so the console sees input correctly.
+
+**File:** `src/USBDevice/DeviceDriver/PS1PS2/controller_simulator.c` — first response byte is the mode byte; no `prime_first_byte()` / leading 0xFF.
 
 ### How to use
 

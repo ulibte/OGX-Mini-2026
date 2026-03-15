@@ -58,7 +58,7 @@ volatile PSXInputState *inputState;
 static void (*core1_function)(void);
 static bool poll_mode = false;
 
-static uint8_t mode = MODE_DIGITAL;
+static uint8_t mode = MODE_ANALOG;
 static bool config = false;
 static bool analogLock = false;
 static uint8_t motorBytes[6] = { 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF };
@@ -77,7 +77,7 @@ static uint8_t RECV_CMD(void) {
 }
 
 static void initController(void) {
-    mode = MODE_DIGITAL;
+    mode = MODE_ANALOG;   /* default to DualShock (analog) so sticks work from first poll */
     config = false;
     analogLock = false;
     memset(motorBytes, 0xFF, sizeof(motorBytes));
@@ -410,13 +410,31 @@ static void init_pio(void) {
 
     cmd_reader_program_init(psx_device_pio, smCmdReader, offsetCmdReader);
     dat_writer_program_init(psx_device_pio, smDatWriter, offsetDatWriter);
+    pio_enable_sm_mask_in_sync(psx_device_pio, (1u << smCmdReader) | (1u << smDatWriter));
 }
 
 void psx_device_set_poll_mode(bool enable) {
     poll_mode = enable;
 }
 
-/* One iteration of the protocol when in poll mode (Core0-driven, e.g. Pico W with BT on Core1). Return 1 if a poll was processed. */
+#if PSX_DEVICE_POLLED_SEL
+/* When Core1 runs psx_device_main(), Core0 must not read the CMD FIFO. Call this from Core0
+ * main loop to handle SEL rising edge (restart PIO) only. Does not read from FIFO. */
+void psx_device_sel_restart_check(void) {
+    static bool last_sel_high = false;
+    bool sel_high = gpio_get(PIN_SEL);
+    if (sel_high && !last_sel_high)
+        restart_pio_sm();
+    last_sel_high = sel_high;
+}
+#else
+void psx_device_sel_restart_check(void) { (void)0; }
+#endif
+
+/* One iteration of the protocol when in poll mode (Core0-driven, e.g. Pico W with BT on Core1).
+ * Return 1 if a transaction was processed, 0 if no data or after desync drain.
+ * If the first byte is not 0x01 we are desynced (e.g. missed a transaction); drain the RX FIFO
+ * so the next SEL transaction starts clean. Caller should loop until 0 so OPL/rapid init don't fall behind. */
 int psx_device_poll(void) {
     static bool controller_inited = false;
 #if PSX_DEVICE_POLLED_SEL
@@ -432,9 +450,14 @@ int psx_device_poll(void) {
     }
     if (pio_sm_get_rx_fifo_level(psx_device_pio, smCmdReader) == 0)
         return 0;
-    uint8_t cmd = (uint8_t)(pio_sm_get(psx_device_pio, smCmdReader) >> 24);
-    if (cmd == 0x01)
-        process_joy_req();
+    uint8_t first = (uint8_t)(pio_sm_get(psx_device_pio, smCmdReader) >> 24);
+    if (first != 0x01) {
+        /* Desynced: drain RX FIFO so next transaction (after SEL cycle) is clean. */
+        while (pio_sm_get_rx_fifo_level(psx_device_pio, smCmdReader) > 0)
+            (void)pio_sm_get(psx_device_pio, smCmdReader);
+        return 0;
+    }
+    process_joy_req();
     return 1;
 }
 

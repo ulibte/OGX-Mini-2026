@@ -220,13 +220,13 @@ void pico_w::run() {
     } else
 #endif
     if (gpio_device_mode) {
-        /* PS1PS2 on Pico W: run BT on Core1 (same as normal path) so LED and pairing work; drive PS2 protocol from Core0 main loop via psx_device_poll(). */
+        /* PS2 on Pico W: same as Switch/PS3 – Core1 = BT, Core0 = main loop. Core1 writes _gamepads, Core0 reads and calls process() + psx_device_poll(). */
         const bool ps2_poll_mode = (current_driver == DeviceDriverType::PS1PS2);
         if (ps2_poll_mode) {
             psx_device_set_poll_mode(true);
-            OGXM_LOG("PicoW run: PS2 poll mode set\n");
+            OGXM_LOG("PicoW run: PS2 poll mode (BT on Core1, protocol on Core0)\n");
         }
-        OGXM_LOG("PicoW run: GPIO device mode, Core1 = BT (PS2 poll on Core0)\n");
+        OGXM_LOG("PicoW run: GPIO device mode\n");
         HostInputSource input_src = user_settings.get_input_source();
         s_gpio_device_driver = device_driver;
         if (input_src == HostInputSource::PSX_GPIO) {
@@ -241,9 +241,9 @@ void pico_w::run() {
         }
         bluepad32::set_gpio_device_process_callback(gpio_device_process_cb, nullptr);
         if (ps2_poll_mode) {
-            /* PS2: init BT/LED/BLEServer only on Core1 to avoid CYW43 gpio_add_raw_irq_handler conflict (double-init assert). */
-            OGXM_LOG("PicoW run: launching Core1 (BT inited there), no Core0 BT init\n");
-            multicore_launch_core1(core1_task);  /* BT on Core1; Core0 main loop will call psx_device_poll() */
+            /* PS2: BT on Core1 (like Switch/PS3); Core0 main loop does process() + psx_device_poll(). */
+            OGXM_LOG("PicoW run: launching Core1 (BT)\n");
+            multicore_launch_core1(core1_task);
         } else {
             OGXM_LOG("PicoW run: Core0 calling init_bluetooth/set_led/BLEServer\n");
             board_api::init_bluetooth();
@@ -288,7 +288,18 @@ void pico_w::run() {
 
     static bool mounted_logged = false;
     static uint32_t loop_count = 0;
+    const bool ps2_poll_mode = gpio_device_mode && (current_driver == DeviceDriverType::PS1PS2);
     while (true) {
+        /* PS2 first: drain before any other work so we respond within byte time (reduces OPL pad-init hang). */
+        if (ps2_poll_mode) {
+            while (psx_device_poll() != 0)
+                ;
+            /* Short burst: update report and drain again to catch OPL's rapid init. */
+            for (uint8_t i = 0; i < MAX_GAMEPADS; ++i)
+                device_driver->process(i, _gamepads[i]);
+            while (psx_device_poll() != 0)
+                ;
+        }
         TaskQueue::Core0::process_tasks();
         if (!wii_mode) {
             if (!gpio_device_mode)
@@ -304,8 +315,9 @@ void pico_w::run() {
                 GPIOHost::n64_host_poll(_gamepads[0]);
             }
         }
-        if (gpio_device_mode && current_driver == DeviceDriverType::PS1PS2) {
-            psx_device_poll();
+        if (ps2_poll_mode) {
+            while (psx_device_poll() != 0)
+                ;
             if (loop_count != 0 && (loop_count % 10000u) == 0)
                 OGXM_LOG("PicoW run: main loop psx_device_poll tick " + std::to_string(loop_count) + "\n");
         }
@@ -323,7 +335,8 @@ void pico_w::run() {
         }
         loop_count++;
 #if MAIN_LOOP_DELAY_US > 0
-        sleep_us(MAIN_LOOP_DELAY_US);
+        if (!ps2_poll_mode)
+            sleep_us(MAIN_LOOP_DELAY_US);
 #endif
     }
 }

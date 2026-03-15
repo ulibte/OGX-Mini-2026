@@ -400,6 +400,8 @@ if(EN_ESP32)
     endif()
     list(APPEND LIBS_BOARD
         hardware_i2c
+        hardware_pio
+        hardware_dma
     )
 endif()
 

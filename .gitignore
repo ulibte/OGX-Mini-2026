@@ -1,6 +1,10 @@
 Firmware/.vscode
 Firmware/RP2040/build
 Firmware/RP2040/build_*
+
+# Build dirs created by scripts/build.sh and scripts/build_all_boards.sh
+scripts/build
+scripts/build_*
 Firmware/RP2040/scripts
 Firmware/RP2040/.ignore
 Firmware/RP2040/src/USBDevice/DeviceDriver/XboxOG/tud_xid/tud_xid_xremote_rom.h

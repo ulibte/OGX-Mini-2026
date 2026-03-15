@@ -35,6 +35,9 @@ void psx_device_main(void);
 /* When enabled, SEL IRQ only restarts PIO (no Core1 reset). Use with psx_device_poll() on Core0 (e.g. Pico W: BT on Core1, PS2 on Core0). */
 void psx_device_set_poll_mode(bool enable);
 
+/* SEL rising-edge check and PIO restart only; does not read CMD FIFO. Use from Core0 when Core1 runs psx_device_main() (Pico W PS2 + OPL). */
+void psx_device_sel_restart_check(void);
+
 /* One poll iteration; call from Core0 main loop when in poll mode. Returns 1 if a command was processed. */
 int psx_device_poll(void);
 

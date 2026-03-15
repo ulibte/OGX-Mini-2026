@@ -341,7 +341,7 @@ namespace PS3
 		0x01,        // bNumInterfaces 1
 		0x01,        // bConfigurationValue
 		0x00,        // iConfiguration (String Index)
-		0x80,        // bmAttributes
+		0xA0,        // bmAttributes (bus powered, remote wakeup — for wake from standby via PS or Start)
 		0xFA,        // bMaxPower 500mA
 
 		0x09,        // bLength

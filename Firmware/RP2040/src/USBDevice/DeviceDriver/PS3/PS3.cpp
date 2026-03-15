@@ -1,6 +1,7 @@
 #include <cstring>
 #include <algorithm>
 
+#include "pico/time.h"
 #include "USBDevice/DeviceDriver/PS3/PS3.h"
 
 void PS3Device::initialize() 
@@ -20,13 +21,41 @@ void PS3Device::initialize()
 
 void PS3Device::process(const uint8_t idx, Gamepad& gamepad) 
 {
-    // Build report only when we're about to send so the console gets the freshest state
-    // (helps Home button and analog timing with DS4/DS5 over Bluetooth).
-    if (tud_suspended())
+    // Remote wake when host has suspended the bus (e.g. PS3 standby): PS button or Start held 3s (same as 360).
     {
-        tud_remote_wakeup();
+        static bool start_wake_sent = false;
+        static bool start_held = false;
+        static absolute_time_t start_hold_begin = { 0 };
+        Gamepad::PadIn gp_wake = gamepad.get_pad_in();
+        bool start_pressed = (gp_wake.buttons & Gamepad::BUTTON_START) != 0;
+        if (start_pressed)
+        {
+            if (!start_held)
+            {
+                start_held = true;
+                start_hold_begin = get_absolute_time();
+            }
+            else
+            {
+                uint64_t hold_ms = to_ms_since_boot(get_absolute_time()) - to_ms_since_boot(start_hold_begin);
+                if (hold_ms >= 3000 && tud_suspended() && !start_wake_sent)
+                {
+                    tud_remote_wakeup();
+                    start_wake_sent = true;
+                }
+            }
+        }
+        else
+        {
+            start_held = false;
+            start_wake_sent = false;
+        }
+        if (tud_suspended() && (gp_wake.buttons & Gamepad::BUTTON_SYS))
+            tud_remote_wakeup();
     }
 
+    // Build report only when we're about to send so the console gets the freshest state
+    // (helps Home button and analog timing with DS4/DS5 over Bluetooth).
     if (tud_hid_ready())
     {
         Gamepad::PadIn gp_in = gamepad.get_pad_in();

@@ -187,7 +187,7 @@ namespace I2C {
         };
 
         static constexpr size_t NUM_SLAVES = MAX_GAMEPADS - 1;
-        static_assert(NUM_SLAVES > 0, "I2CMaster::NUM_SLAVES must be greater than 0 to use I2C");
+        // NUM_SLAVES may be 0 when MAX_GAMEPADS==1 (slave-only or master with no I2C slaves)
 
         std::array<Slave, NUM_SLAVES> _slaves; 
 
@@ -264,7 +264,7 @@ namespace I2C {
         }
 
         static void xbox360w_connect(bool connected, uint8_t idx) {
-            if (idx < 1 || idx >= MAX_GAMEPADS) {
+            if (idx < 1 || idx > NUM_SLAVES) {
                 return;
             }
             // This function can be called from core1 

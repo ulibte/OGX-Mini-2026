@@ -4,151 +4,182 @@
 #include "USBDevice/DeviceDriver/XboxOG/tud_xid/tud_xid.h"
 #include "USBDevice/DeviceDriver/XboxOG/XboxOG_GP.h"
 #include "Gamepad/Gamepad.h"
+#if defined(CONFIG_OGXM_DEBUG)
+#include <string>
+#include "Board/ogxm_log.h"
+#endif
 
-void XboxOGDevice::initialize() 
+void XboxOGDevice::initialize()
 {
+#if defined(CONFIG_OGXM_DEBUG)
+    OGXM_LOG("XboxOG: initialize\n");
+#endif
     tud_xid::initialize(tud_xid::Type::GAMEPAD);
     class_driver_ = *tud_xid::class_driver();
 
     std::memset(&in_report_, 0, sizeof(XboxOG::GP::InReport));
     in_report_.report_len = sizeof(XboxOG::GP::InReport);
+#if defined(CONFIG_OGXM_DEBUG)
+    OGXM_LOG("XboxOG: init done\n");
+#endif
 }
 
 void XboxOGDevice::process(const uint8_t idx, Gamepad& gamepad)
 {
-    // Build report every loop (same low-latency pattern as XInput/PS3) so GET_REPORT and
-    // interrupt IN always see latest state; send when endpoint is ready.
-    std::memset(&in_report_.buttons, 0, 8);
-    Gamepad::PadIn gp_in = gamepad.get_pad_in();
+    /* Reverted to v1.0.0a5 behaviour: only build/send report when new input (avoids random disconnects on OG Xbox). */
+#if defined(CONFIG_OGXM_DEBUG)
+    static uint32_t s_process_ticks = 0;
+    static uint32_t s_send_count = 0;
+    static uint32_t s_new_pad_in_count = 0;
+    s_process_ticks++;
+#endif
+    if (gamepad.new_pad_in())
+    {
+#if defined(CONFIG_OGXM_DEBUG)
+        s_new_pad_in_count++;
+#endif
+        std::memset(&in_report_.buttons, 0, 8);
+        Gamepad::PadIn gp_in = gamepad.get_pad_in();
 
-    // Guide (SYS) button: tap = Start, hold 1s = soft IGR (LT+RT+Start+Back), hold 3s = shutdown (LT+RT+Up+Back)
-    bool sys_pressed = (gp_in.buttons & Gamepad::BUTTON_SYS) != 0;
-    if (sys_pressed && !sys_button_pressed_)
-    {
-        sys_button_pressed_ = true;
-        sys_button_press_time_ = get_absolute_time();
-        sys_button_combo_sent_ = false;
-    }
-    else if (!sys_pressed && sys_button_pressed_)
-    {
-        sys_button_pressed_ = false;
-        uint64_t hold_time_ms = to_ms_since_boot(get_absolute_time()) - to_ms_since_boot(sys_button_press_time_);
-        if (hold_time_ms >= 3000)
+        // Guide (SYS) button: tap = Start, hold 1s = soft IGR (LT+RT+Start+Back), hold 3s = shutdown (LT+RT+Up+Back)
+        bool sys_pressed = (gp_in.buttons & Gamepad::BUTTON_SYS) != 0;
+        if (sys_pressed && !sys_button_pressed_)
         {
-            gp_in.trigger_l = gamepad.scale_trigger_l(0xFF);
-            gp_in.trigger_r = gamepad.scale_trigger_r(0xFF);
-            gp_in.dpad |= Gamepad::DPAD_UP;
-            gp_in.buttons |= Gamepad::BUTTON_BACK;
-            sys_button_combo_sent_ = true;
+            sys_button_pressed_ = true;
+            sys_button_press_time_ = get_absolute_time();
+            sys_button_combo_sent_ = false;
         }
-        else if (hold_time_ms >= 1000)
+        else if (!sys_pressed && sys_button_pressed_)
         {
-            gp_in.trigger_l = gamepad.scale_trigger_l(0xFF);
-            gp_in.trigger_r = gamepad.scale_trigger_r(0xFF);
-            gp_in.buttons |= Gamepad::BUTTON_START;
-            gp_in.buttons |= Gamepad::BUTTON_BACK;
-            sys_button_combo_sent_ = true;
+            sys_button_pressed_ = false;
+            uint64_t hold_time_ms = to_ms_since_boot(get_absolute_time()) - to_ms_since_boot(sys_button_press_time_);
+            if (hold_time_ms >= 3000)
+            {
+                gp_in.trigger_l = gamepad.scale_trigger_l(0xFF);
+                gp_in.trigger_r = gamepad.scale_trigger_r(0xFF);
+                gp_in.dpad |= Gamepad::DPAD_UP;
+                gp_in.buttons |= Gamepad::BUTTON_BACK;
+                sys_button_combo_sent_ = true;
+            }
+            else if (hold_time_ms >= 1000)
+            {
+                gp_in.trigger_l = gamepad.scale_trigger_l(0xFF);
+                gp_in.trigger_r = gamepad.scale_trigger_r(0xFF);
+                gp_in.buttons |= Gamepad::BUTTON_START;
+                gp_in.buttons |= Gamepad::BUTTON_BACK;
+                sys_button_combo_sent_ = true;
+            }
+            else
+            {
+                gp_in.buttons |= Gamepad::BUTTON_START;
+                sys_button_combo_sent_ = true;
+            }
+        }
+        else if (sys_pressed && !sys_button_combo_sent_)
+        {
+            uint64_t hold_time_ms = to_ms_since_boot(get_absolute_time()) - to_ms_since_boot(sys_button_press_time_);
+            if (hold_time_ms >= 3000)
+            {
+                gp_in.trigger_l = gamepad.scale_trigger_l(0xFF);
+                gp_in.trigger_r = gamepad.scale_trigger_r(0xFF);
+                gp_in.dpad |= Gamepad::DPAD_UP;
+                gp_in.buttons |= Gamepad::BUTTON_BACK;
+                sys_button_combo_sent_ = true;
+            }
+            else if (hold_time_ms >= 1000)
+            {
+                gp_in.trigger_l = gamepad.scale_trigger_l(0xFF);
+                gp_in.trigger_r = gamepad.scale_trigger_r(0xFF);
+                gp_in.buttons |= Gamepad::BUTTON_START;
+                gp_in.buttons |= Gamepad::BUTTON_BACK;
+                sys_button_combo_sent_ = true;
+            }
+            else
+            {
+                gp_in.buttons |= Gamepad::BUTTON_START;
+            }
+        }
+
+        switch (gp_in.dpad)
+        {
+            case Gamepad::DPAD_UP:
+                in_report_.buttons = XboxOG::GP::Buttons::DPAD_UP;
+                break;
+            case Gamepad::DPAD_DOWN:
+                in_report_.buttons = XboxOG::GP::Buttons::DPAD_DOWN;
+                break;
+            case Gamepad::DPAD_LEFT:
+                in_report_.buttons = XboxOG::GP::Buttons::DPAD_LEFT;
+                break;
+            case Gamepad::DPAD_RIGHT:
+                in_report_.buttons = XboxOG::GP::Buttons::DPAD_RIGHT;
+                break;
+            case Gamepad::DPAD_UP_LEFT:
+                in_report_.buttons = XboxOG::GP::Buttons::DPAD_UP | XboxOG::GP::Buttons::DPAD_LEFT;
+                break;
+            case Gamepad::DPAD_UP_RIGHT:
+                in_report_.buttons = XboxOG::GP::Buttons::DPAD_UP | XboxOG::GP::Buttons::DPAD_RIGHT;
+                break;
+            case Gamepad::DPAD_DOWN_LEFT:
+                in_report_.buttons = XboxOG::GP::Buttons::DPAD_DOWN | XboxOG::GP::Buttons::DPAD_LEFT;
+                break;
+            case Gamepad::DPAD_DOWN_RIGHT:
+                in_report_.buttons = XboxOG::GP::Buttons::DPAD_DOWN | XboxOG::GP::Buttons::DPAD_RIGHT;
+                break;
+            default:
+                break;
+        }
+
+        if (gp_in.buttons & Gamepad::BUTTON_BACK)     in_report_.buttons |= XboxOG::GP::Buttons::BACK;
+        if (gp_in.buttons & Gamepad::BUTTON_START)    in_report_.buttons |= XboxOG::GP::Buttons::START;
+        if (gp_in.buttons & Gamepad::BUTTON_L3)       in_report_.buttons |= XboxOG::GP::Buttons::L3;
+        if (gp_in.buttons & Gamepad::BUTTON_R3)       in_report_.buttons |= XboxOG::GP::Buttons::R3;
+
+        if (gamepad.analog_enabled())
+        {
+            in_report_.a = gp_in.analog[Gamepad::ANALOG_OFF_A];
+            in_report_.b = gp_in.analog[Gamepad::ANALOG_OFF_B];
+            in_report_.x = gp_in.analog[Gamepad::ANALOG_OFF_X];
+            in_report_.y = gp_in.analog[Gamepad::ANALOG_OFF_Y];
+            in_report_.white = gp_in.analog[Gamepad::ANALOG_OFF_LB];
+            in_report_.black = gp_in.analog[Gamepad::ANALOG_OFF_RB];
         }
         else
         {
-            gp_in.buttons |= Gamepad::BUTTON_START;
-            sys_button_combo_sent_ = true;
+            if (gp_in.buttons & Gamepad::BUTTON_X)    in_report_.x = 0xFF;
+            if (gp_in.buttons & Gamepad::BUTTON_A)    in_report_.a = 0xFF;
+            if (gp_in.buttons & Gamepad::BUTTON_Y)    in_report_.y = 0xFF;
+            if (gp_in.buttons & Gamepad::BUTTON_B)    in_report_.b = 0xFF;
+            if (gp_in.buttons & Gamepad::BUTTON_LB)   in_report_.white = 0xFF;
+            if (gp_in.buttons & Gamepad::BUTTON_RB)   in_report_.black = 0xFF;
         }
-    }
-    else if (sys_pressed && !sys_button_combo_sent_)
-    {
-        uint64_t hold_time_ms = to_ms_since_boot(get_absolute_time()) - to_ms_since_boot(sys_button_press_time_);
-        if (hold_time_ms >= 3000)
+
+        in_report_.trigger_l = gp_in.trigger_l;
+        in_report_.trigger_r = gp_in.trigger_r;
+
+        in_report_.joystick_lx = gp_in.joystick_lx;
+        in_report_.joystick_ly = Range::invert(gp_in.joystick_ly);
+        in_report_.joystick_rx = gp_in.joystick_rx;
+        in_report_.joystick_ry = Range::invert(gp_in.joystick_ry);
+
+        if (tud_suspended())
         {
-            gp_in.trigger_l = gamepad.scale_trigger_l(0xFF);
-            gp_in.trigger_r = gamepad.scale_trigger_r(0xFF);
-            gp_in.dpad |= Gamepad::DPAD_UP;
-            gp_in.buttons |= Gamepad::BUTTON_BACK;
-            sys_button_combo_sent_ = true;
+#if defined(CONFIG_OGXM_DEBUG)
+            OGXM_LOG("XboxOG: tud_remote_wakeup\n");
+#endif
+            tud_remote_wakeup();
         }
-        else if (hold_time_ms >= 1000)
+        bool ready = tud_xid::send_report_ready(0);
+#if defined(CONFIG_OGXM_DEBUG)
+        if (ready)
+            s_send_count++;
+        if (s_process_ticks % 5000 == 0)
+            OGXM_LOG("XboxOG: process tick " + std::to_string(s_process_ticks) + " new_pad_in=" + std::to_string(s_new_pad_in_count) + " send_ready=" + std::to_string(ready) + " sent=" + std::to_string(s_send_count) + "\n");
+#endif
+        if (ready)
         {
-            gp_in.trigger_l = gamepad.scale_trigger_l(0xFF);
-            gp_in.trigger_r = gamepad.scale_trigger_r(0xFF);
-            gp_in.buttons |= Gamepad::BUTTON_START;
-            gp_in.buttons |= Gamepad::BUTTON_BACK;
-            sys_button_combo_sent_ = true;
+            tud_xid::send_report(0, reinterpret_cast<uint8_t*>(&in_report_), sizeof(XboxOG::GP::InReport));
         }
-        else
-        {
-            gp_in.buttons |= Gamepad::BUTTON_START;
-        }
-    }
-
-    switch (gp_in.dpad)
-    {
-        case Gamepad::DPAD_UP:
-            in_report_.buttons = XboxOG::GP::Buttons::DPAD_UP;
-            break;
-        case Gamepad::DPAD_DOWN:
-            in_report_.buttons = XboxOG::GP::Buttons::DPAD_DOWN;
-            break;
-        case Gamepad::DPAD_LEFT:
-            in_report_.buttons = XboxOG::GP::Buttons::DPAD_LEFT;
-            break;
-        case Gamepad::DPAD_RIGHT:
-            in_report_.buttons = XboxOG::GP::Buttons::DPAD_RIGHT;
-            break;
-        case Gamepad::DPAD_UP_LEFT:
-            in_report_.buttons = XboxOG::GP::Buttons::DPAD_UP | XboxOG::GP::Buttons::DPAD_LEFT;
-            break;
-        case Gamepad::DPAD_UP_RIGHT:
-            in_report_.buttons = XboxOG::GP::Buttons::DPAD_UP | XboxOG::GP::Buttons::DPAD_RIGHT;
-            break;
-        case Gamepad::DPAD_DOWN_LEFT:
-            in_report_.buttons = XboxOG::GP::Buttons::DPAD_DOWN | XboxOG::GP::Buttons::DPAD_LEFT;
-            break;
-        case Gamepad::DPAD_DOWN_RIGHT:
-            in_report_.buttons = XboxOG::GP::Buttons::DPAD_DOWN | XboxOG::GP::Buttons::DPAD_RIGHT;
-            break;
-        default:
-            break;
-    }
-
-    if (gp_in.buttons & Gamepad::BUTTON_BACK)     in_report_.buttons |= XboxOG::GP::Buttons::BACK;
-    if (gp_in.buttons & Gamepad::BUTTON_START)    in_report_.buttons |= XboxOG::GP::Buttons::START;
-    if (gp_in.buttons & Gamepad::BUTTON_L3)       in_report_.buttons |= XboxOG::GP::Buttons::L3;
-    if (gp_in.buttons & Gamepad::BUTTON_R3)       in_report_.buttons |= XboxOG::GP::Buttons::R3;
-
-    if (gamepad.analog_enabled())
-    {
-        in_report_.a = gp_in.analog[Gamepad::ANALOG_OFF_A];
-        in_report_.b = gp_in.analog[Gamepad::ANALOG_OFF_B];
-        in_report_.x = gp_in.analog[Gamepad::ANALOG_OFF_X];
-        in_report_.y = gp_in.analog[Gamepad::ANALOG_OFF_Y];
-        in_report_.white = gp_in.analog[Gamepad::ANALOG_OFF_LB];
-        in_report_.black = gp_in.analog[Gamepad::ANALOG_OFF_RB];
-    }
-    else
-    {
-        if (gp_in.buttons & Gamepad::BUTTON_X)    in_report_.x = 0xFF;
-        if (gp_in.buttons & Gamepad::BUTTON_A)    in_report_.a = 0xFF;
-        if (gp_in.buttons & Gamepad::BUTTON_Y)    in_report_.y = 0xFF;
-        if (gp_in.buttons & Gamepad::BUTTON_B)    in_report_.b = 0xFF;
-        if (gp_in.buttons & Gamepad::BUTTON_LB)   in_report_.white = 0xFF;
-        if (gp_in.buttons & Gamepad::BUTTON_RB)   in_report_.black = 0xFF;
-    }
-
-    in_report_.trigger_l = gp_in.trigger_l;
-    in_report_.trigger_r = gp_in.trigger_r;
-
-    in_report_.joystick_lx = gp_in.joystick_lx;
-    in_report_.joystick_ly = Range::invert(gp_in.joystick_ly);
-    in_report_.joystick_rx = gp_in.joystick_rx;
-    in_report_.joystick_ry = Range::invert(gp_in.joystick_ry);
-
-    if (tud_suspended())
-    {
-        tud_remote_wakeup();
-    }
-    if (tud_xid::send_report_ready(0))
-    {
-        tud_xid::send_report(0, reinterpret_cast<uint8_t*>(&in_report_), sizeof(XboxOG::GP::InReport));
     }
 
     if (tud_xid::receive_report(0, reinterpret_cast<uint8_t*>(&out_report_), sizeof(XboxOG::GP::OutReport)))
@@ -160,8 +191,14 @@ void XboxOGDevice::process(const uint8_t idx, Gamepad& gamepad)
     }
 }
 
-uint16_t XboxOGDevice::get_report_cb(uint8_t itf, uint8_t report_id, hid_report_type_t report_type, uint8_t *buffer, uint16_t reqlen) 
+uint16_t XboxOGDevice::get_report_cb(uint8_t itf, uint8_t report_id, hid_report_type_t report_type, uint8_t *buffer, uint16_t reqlen)
 {
+#if defined(CONFIG_OGXM_DEBUG)
+    static uint32_t s_get_report_count = 0;
+    s_get_report_count++;
+    if (s_get_report_count <= 5 || s_get_report_count % 1000 == 0)
+        OGXM_LOG("XboxOG: get_report_cb #" + std::to_string(s_get_report_count) + "\n");
+#endif
     std::memcpy(buffer, &in_report_, sizeof(in_report_));
 	return sizeof(XboxOG::GP::InReport);
 }
