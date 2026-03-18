@@ -158,6 +158,21 @@ public:
     inline PadIn get_pad_in()
     {
         mutex_enter_blocking(&pad_in_mutex_);
+        /* Bluetooth HID runs on Core1; never block there on this mutex (would stall HCI/L2CAP).
+         * Latest BT report is staged lock-free and merged here on Core0. */
+        if (bt_pad_staged_.exchange(false, std::memory_order_acq_rel)) {
+            const PadIn& p = bt_pending_pad_;
+            if (pad_in_count_ < PAD_IN_QUEUE_SIZE) {
+                pad_in_queue_[pad_in_tail_] = p;
+                pad_in_tail_ = (pad_in_tail_ + 1) % PAD_IN_QUEUE_SIZE;
+                pad_in_count_++;
+            } else {
+                pad_in_head_ = (pad_in_head_ + 1) % PAD_IN_QUEUE_SIZE;
+                pad_in_queue_[pad_in_tail_] = p;
+                pad_in_tail_ = (pad_in_tail_ + 1) % PAD_IN_QUEUE_SIZE;
+            }
+            new_pad_in_.store(true);
+        }
         PadIn pad_in;
         if (pad_in_count_ > 0) {
             pad_in = pad_in_queue_[pad_in_head_];
@@ -235,6 +250,14 @@ public:
         mutex_exit(&pad_in_mutex_);
     }
 
+    /** Bluetooth (Core1): never blocks on Core0 — avoids stalling the BT stack in HID callbacks. */
+    inline void set_pad_in_from_bluetooth(const PadIn& pad_in)
+    {
+        bt_pending_pad_ = pad_in;
+        bt_pad_staged_.store(true, std::memory_order_release);
+        new_pad_in_.store(true, std::memory_order_release);
+    }
+
     inline void set_pad_out(const PadOut& pad_out)
     {
         mutex_enter_blocking(&pad_out_mutex_);
@@ -256,6 +279,7 @@ public:
 
     inline void reset_pad_in()
     {
+        bt_pad_staged_.store(false, std::memory_order_relaxed);
         mutex_enter_blocking(&pad_in_mutex_);
         pad_in_head_ = 0;
         pad_in_tail_ = 0;
@@ -374,9 +398,11 @@ public:
                     : trigger_value;
     }
 
-    static constexpr unsigned PAD_IN_QUEUE_SIZE = 2;
+    static constexpr unsigned PAD_IN_QUEUE_SIZE = 8;
 
 private:
+    PadIn bt_pending_pad_{};
+    std::atomic<bool> bt_pad_staged_{false};
     mutex_t pad_in_mutex_;
     mutex_t pad_out_mutex_;
     mutex_t chatpad_in_mutex_;

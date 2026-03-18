@@ -160,7 +160,7 @@ public:
 	{
 		for (auto& device_slot : device_slots_)
 		{
-			if (device_slot.address == address && 
+			if (device_slot.address == address &&
 				device_slot.interfaces[instance].driver &&
 				device_slot.interfaces[instance].gamepad)
 			{
@@ -281,6 +281,23 @@ public:
 			{
 				return true;
 			}
+		}
+		return false;
+	}
+
+	/** True if this device address already has any host driver (e.g. HID). Used to prefer XInput over HID for the same device. */
+	inline bool address_has_driver(uint8_t address) const
+	{
+		for (const auto& device_slot : device_slots_)
+		{
+			if (device_slot.address != address)
+				continue;
+			for (const auto& iface : device_slot.interfaces)
+			{
+				if (iface.driver != nullptr)
+					return true;
+			}
+			return false;
 		}
 		return false;
 	}

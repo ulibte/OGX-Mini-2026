@@ -81,6 +81,21 @@ void PS1PS2Device::process(const uint8_t idx, Gamepad& gamepad) {
     psx_report_.ly = static_cast<uint8_t>(ly);
     psx_report_.rx = static_cast<uint8_t>(rx);
     psx_report_.ry = static_cast<uint8_t>(ry);
+
+    /* Home only = IGR (L1+L2+R1+R2+Start+Select); Home+Start = shutdown (L1+L2+R1+R2+L3+R3) */
+    bool home_pressed = (gp.buttons & Gamepad::BUTTON_SYS) != 0;
+    bool start_pressed = (gp.buttons & Gamepad::BUTTON_START) != 0;
+    if (home_pressed && start_pressed) {
+        psx_report_.buttons1 &= ~(PSX_L3 | PSX_R3);
+        psx_report_.buttons2 &= ~(PSX_L1 | PSX_L2 | PSX_R1 | PSX_R2);
+        psx_report_.l2 = 0xFF;
+        psx_report_.r2 = 0xFF;
+    } else if (home_pressed) {
+        psx_report_.buttons1 &= ~(PSX_SELECT | PSX_START);
+        psx_report_.buttons2 &= ~(PSX_L1 | PSX_L2 | PSX_R1 | PSX_R2);
+        psx_report_.l2 = 0xFF;
+        psx_report_.r2 = 0xFF;
+    }
 }
 
 uint16_t PS1PS2Device::get_report_cb(uint8_t itf, uint8_t report_id, hid_report_type_t report_type, uint8_t* buffer, uint16_t req_len) {

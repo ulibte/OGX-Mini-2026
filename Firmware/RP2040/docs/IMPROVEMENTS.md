@@ -2,7 +2,7 @@
 
 Improvements and fixes applied to the OGX-Mini RP2040 firmware in this project.
 
-**Version:** From **v1.0.0a3** the version was bumped to **v1.0.0a4** to reflect Wii U controller fixes, Gamecube USB mode, PS3 driver fixes, latency improvements, and Xbox 360 (XInput) support (see below).
+**Version:** From **v1.0.0a3** the version was bumped to **v1.0.0a4** to reflect Wii U controller fixes, Gamecube USB mode, PS3 driver fixes, latency improvements, and Xbox 360 (XInput) support (see below). **v1.0.0.8a+** documents **Pico W / Pico 2 W** work on **DualShock 4 (Classic Bluetooth)** vs **BLE advertising**, **BR inquiry**, and related BT stability (see *Pico W / Pico 2 W — DualShock 4 and Classic Bluetooth* below).
 
 ---
 
@@ -118,9 +118,9 @@ Same goal as Switch Pro and PS3: the only added latency when using a wireless co
 
 Both modes: no `new_pad_in()` gate; main loop runs with `MAIN_LOOP_DELAY_US=0` by default; `tud_task()` runs before `process()` so the endpoint is ready when we try to send.
 
-### Xbox OG (Duke) gamepad: send only on new input (stability on real hardware)
+### Xbox OG (Duke) gamepad: send only on new input (match Team-Resurgent)
 
-On the Original Xbox, sending a report every poll cycle caused **random disconnects**. The driver was reverted to **only** build and send the HID report when `gamepad.new_pad_in()` is true (v1.0.0a5 behaviour). Rumble handling is unchanged. This differs from XInput/PS3/Switch, which send every loop; the OG Xbox console is sensitive to report timing and the “send when new input” rule avoids disconnects while keeping input responsive.
+Report build/send timing matches [Team-Resurgent/OGX-Mini](https://github.com/Team-Resurgent/OGX-Mini): the HID report is built and sent **only** when `gamepad.new_pad_in()` is true. Sending every poll caused random disconnects on some OG Xbox setups; the “send when new input” rule avoids that. Guide (SYS) combos are kept: **Guide only** = IGR (LT+RT+Start+Back), **Guide+Start** = shutdown (LT+RT+Back+White). Rumble handling is unchanged.
 
 - **File:** `src/USBDevice/DeviceDriver/XboxOG/XboxOG_GP.cpp` — `process()` builds `in_report_` and calls `tud_xid::send_report()` only when `new_pad_in()` and `send_report_ready(0)`.
 
@@ -141,6 +141,26 @@ The main loop now calls **`tud_task()` before** `device_driver->process()`. That
 **Fix:** The PS2 controller (device) response was reverted so the **first response byte is the mode byte** (no leading 0xFF). Protocol and escape-mode response lengths otherwise follow PicoGamepadConverter and DS4toPS2. The main loop drains all pending PS2 transactions each tick so rapid pad init (e.g. OPL at boot) does not desync. Core1 runs Bluetooth when used; Core0 runs the main loop and `psx_device_poll()` so the console sees input correctly.
 
 **File:** `src/USBDevice/DeviceDriver/PS1PS2/controller_simulator.c` — first response byte is the mode byte; no `prime_first_byte()` / leading 0xFF.
+
+---
+
+## PS2 (GPIO) and OG Xbox — Home/Guide IGR and shutdown
+
+**Goal:** Use the Home (PS2) or Guide (OG Xbox) button for in-game reset (IGR) and console shutdown with the same interaction pattern on both platforms: **Home only** = restart (IGR), **Home+Start** = shutdown.
+
+### PS2 (GPIO) mode
+
+**Files:** `src/USBDevice/DeviceDriver/PS1PS2/PS1PS2.cpp`, `PS1PS2.h`
+
+- **Home only** — Sends the OPL in-game reset combo: **L1+L2+R1+R2+Start+Select** (triggers full). The console restarts the game / returns to OPL.
+- **Home+Start** — Sends shutdown combo: **L1+L2+R1+R2+L3+R3** (triggers full). The console shuts down.
+
+### OG Xbox mode
+
+**Files:** `src/USBDevice/DeviceDriver/XboxOG/XboxOG_GP.cpp`, `XboxOG_GP.h`
+
+- **Guide only** — Sends IGR (restart) combo: **LT+RT+Start+Back** (triggers full). The console performs a soft reset / returns to dashboard (or IGR handler).
+- **Guide+Start** — Sends shutdown combo: **LT+RT+Back+White** (triggers full). The console shuts down.
 
 ### How to use
 
@@ -193,11 +213,69 @@ Some 8BitDo wired XInput controllers (VID 0x2DC8, PID 0x3016 or 0x3106) can disc
 
 ---
 
+## Pico W / Pico 2 W — DualShock 4 and Classic Bluetooth (BR/EDR) stability
+
+**Context:** On **CYW43439** (Pico W / Pico 2 W), **BLE** and **Classic Bluetooth (BR/EDR)** share one radio. **DualShock 4** uses **Classic ACL** only. **DualSense**, **Xbox Series (BLE)**, and **Switch Pro** (typical pairing) use **LE** — so DS4 was uniquely sensitive to how the stack used the radio at the same time as other activity.
+
+### 1. BLE advertising vs Classic ACL (main DS4 drop fix)
+
+**OGX-Mini** starts **BLE advertising** via **BLEServer** so the **phone / web app** can discover the adapter. If that advertising stays on while a **Classic** gamepad (DS4, DualShock 3 BT, Xbox 360 wireless) holds an **ACL** link, the connection often **dies within seconds** (e.g. blue LED then disconnect).
+
+- **`gap_advertisements_enable(0)`** at the **start of DS4 HID setup** (before lightbar / calibration traffic), and again whenever **any** ready gamepad uses **`GAP_CONNECTION_ACL`**.
+- **`gap_advertisements_enable(1)`** when the **last** Classic pad disconnects (BLE-only controllers, e.g. DualSense still connected, are unaffected by this rule).
+
+**Files:** `Firmware/external/bluepad32/.../parser/uni_hid_parser_ds4.c` (OGXM Pico path), `Firmware/RP2040/src/Bluepad32/Bluepad32.cpp`.
+
+**User impact:** While a **Classic Bluetooth** controller is connected, the adapter **does not advertise** for the BLE web app. Disconnect that controller (or use **USB** for setup) to use **Bluetooth** in the web app again.
+
+### 2. BR/EDR inquiry while Classic is connected
+
+**Periodic inquiry** (scanning for new gamepads) **plus** an active **Classic ACL** also contends on the same radio and contributed to **short-lived DS4** links.
+
+- **`uni_bt_bredr_scan_stop()`** at the beginning of DS4 setup and when any **ACL** pad becomes **ready**.
+- **`uni_bt_bredr_scan_start()`** when the **last** Classic pad disconnects (if scanning is still enabled globally).
+
+**File:** `Bluepad32.cpp` (and DS4 setup in `uni_hid_parser_ds4.c`).
+
+### 3. DS4 virtual “touchpad mouse” disabled on Pico
+
+Bluepad32 can register a **second virtual HID device** (mouse) on the same DS4 link. On Pico W that path was linked to **unstable links**; the OGX build (**`OGXM_BLUEPAD32_PICO_W`**) **does not create** that virtual device. **DualSense** still uses its normal setup (virtual child rejected in `device_ready` where applicable).
+
+**File:** `uni_hid_parser_ds4.c` (CMake defines `OGXM_BLUEPAD32_PICO_W=1` for the Bluepad32 library in `Firmware/RP2040/CMakeLists.txt`).
+
+### 4. PS4 rumble / FF grace period
+
+For **`CONTROLLER_TYPE_PS4Controller`**, **rumble output** is **delayed ~6 seconds** after connect so the host cannot push force-feedback during the fragile init window.
+
+**File:** `Bluepad32.cpp` — `send_feedback_cb` / `device_ready_cb`.
+
+### 5. Related Pico W Bluetooth improvements (see also Summary table)
+
+- **Core0 `sleep_ms(1)`** in the main loop so Core1 (BT stack) gets CPU time ([Team-Resurgent/OGX-Mini](https://github.com/Team-Resurgent/OGX-Mini) pattern).
+- **Lock-free Bluetooth input path** (`set_pad_in_from_bluetooth`) so HID callbacks never block on Core0’s mutex.
+- **Reconnect:** last device disconnect calls **`uni_bt_enable_new_connections_unsafe(true)`** so pairing can resume without power-cycling.
+- **8 s input-stall disconnect** (non-virtual, non-BLE-Xbox) to clear zombie links; **BLE Xbox** uses keepalive instead of stall disconnect.
+
+---
+
 ## Switch Pro — analog stick sensitivity
 
 A configurable sensitivity gain is applied to the analog sticks in Switch Pro emulation. Raw stick values (outside the deadzone) are scaled by **STICK_GAIN_NUM / STICK_GAIN_DEN** (default 120/100 = 1.2×) before mapping to the 12-bit Switch report. The same physical deflection produces slightly larger output for a more responsive feel.
 
 **File:** `src/USBDevice/DeviceDriver/Switch/Switch.cpp` — `gamepad_to_switch_report()`; tune via `STICK_GAIN_NUM` and `STICK_GAIN_DEN`.
+
+---
+
+## Build scripts (new users)
+
+To build firmware without memorizing CMake options, use the interactive build scripts from the **project root**:
+
+| Platform | Command |
+|----------|---------|
+| **Linux / macOS** | `./scripts/build.sh` |
+| **Windows (PowerShell)** | `.\scripts\build.ps1` |
+
+The script checks for required tools (git, python3, cmake, ninja, arm-none-eabi-gcc) and prints install hints if something is missing. It then prompts for: (1) board (Pi Pico, Pico W, Pico 2 W, RP2040-Zero, XIAO, Feather, 4CH I2C, ESP32 hybrid, etc.); (2) default (all modes via combos) or fixed output mode (e.g. Wii, GameCube, N64); (3) Release or Debug. Build output (`.uf2`, `.elf`) is written to **`scripts/build/`**; on failure you can save a log to `scripts/build_log.txt`. See the main [README](../../../README.md) Build section for the full description.
 
 ---
 
@@ -207,6 +285,10 @@ A configurable sensitivity gain is applied to the analog sticks in Switch Pro em
 |------|-------------|
 | **XInput (360)** | XSM3 authentication and descriptors aligned with joypad-os; adapter works on Xbox 360 with BT controllers (PS5, Xbox One). 8BitDo wired fix: LED keepalive for VID 0x2DC8 / PID 0x3016 or 0x3106. Report built every loop, send when endpoint ready — same minimal-latency pattern as Switch/PS3. |
 | **PS3** | Stuck inputs and delays addressed via L2/R2 axes; DS3-accurate sticks (0–255, center 0x80, ~1.5% deadzone); D-pad and face button mapping; Home (PS) button with 8-frame latch for BT controllers. |
+| **PS2 (GPIO)** | Home only = IGR (L1+L2+R1+R2+Start+Select); Home+Start = shutdown (L1+L2+R1+R2+L3+R3). OPL and protocol stability (first response byte = mode byte). |
+| **OG Xbox** | Guide only = IGR. Shutdown = LT+RT+Back+White via **Guide+Start** or **Guide+View (Back)**; Xbox BT often omits Start while Guide is held. Shutdown report strips Start so the chord matches BIOS/softmod expectations. |
 | **Switch Pro** | Analog stick sensitivity gain (default 1.2×) for more responsive sticks; configurable in `Switch.cpp`. |
 | **Boards** | RP2350_ZERO, RP2040_XIAO, RP2354 supported (Standard/PIO-USB host path). |
 | **Latency** | Main loop delay default **0 µs**; `tud_task()` before `process()` so reports send every loop when ready; XInput/Switch/PS3 send latest state when USB ready (no `new_pad_in()` gate). Switch Pro and PS3 always build report every loop so host poll (`get_report`) and IN push both see current state — only remaining delay is BT radio when wireless. |
+| **Build** | Interactive scripts `scripts/build.sh` (Linux/macOS) and `scripts/build.ps1` (Windows) for board selection, fixed/default mode, and Release/Debug; output in `scripts/build/`. See [README](../../../README.md) Build section. |
+| **Bluetooth (Pico W)** | **DS4 / Classic ACL:** BLE advertising **paused** while Classic pad connected; **BR inquiry stopped** during ACL; **no DS4 virtual mouse**; **6 s PS4 rumble** grace. **Xbox Series (BLE):** no stall disconnect when idle; keepalive 12 s; stale-slot delete on reconnect. **General:** `sleep_ms(1)` main loop; lock-free BT pad-in; re-enable scan on last disconnect. |

@@ -1,4 +1,9 @@
 # OGX-Mini 2026
+
+**Support development** — If this firmware helps you, consider **[donating on Ko-fi](https://ko-fi.com/megacadedev)**. Contributions go toward testing and adding support for **more boards and controllers** so the project can grow for everyone.
+
+---
+
 ![OGX-Mini Boards](images/OGX-Mini-github.jpg "OGX-Mini Boards")
 
 Firmware for the RP2040, capable of emulating gamepads for several game consoles. The firmware comes in many flavors, supported on the [Adafruit Feather USB Host board](https://www.adafruit.com/product/5723), Pi Pico, Pi Pico 2, Pi Pico W, Pi Pico 2 W, Waveshare RP2040-Zero, Waveshare RP2350-USB-A, Waveshare RP2350-Zero, Seeed Studio XIAO RP2040, RP2354, Pico/ESP32 hybrid, and a 4-Channel RP2040-Zero setup.
@@ -69,7 +74,7 @@ For the OUYA controller there is no Start+Select, the disconnection combo has be
 
 ## Supported devices
 ### Wired controllers (USB input)
-The following work when the adapter is outputting to any supported platform (Xbox, Switch, XInput, PS3, DInput, **PS1/PS2**, **Dreamcast**, **GameCube**, **N64**, etc.):
+See [**Wired Controllers**](Firmware/RP2040/docs/Wired_Controllers.md) for a full list by driver type. The following work when the adapter is outputting to any supported platform (Xbox, Switch, XInput, PS3, DInput, **PS1/PS2**, **Dreamcast**, **GameCube**, **N64**, etc.):
 - Original Xbox Duke and S
 - Xbox 360, One, Series, and Elite
 - Dualshock 3 (PS3)
@@ -90,7 +95,17 @@ Note: There are some third party controllers that can change their VID/PID, thes
 - Most wireless adapters that present themselves as Switch/XInput/PlayStation controllers should work
 
 ### Wireless Bluetooth controllers (Pico W & ESP32)
-**Note:** Bluetooth functionality is in early testing, some may have quirks. Bluetooth controllers work as input when outputting to **PS1/PS2**, **Dreamcast**, **GameCube**, or **N64** (same as wired USB in those modes).
+**Note:** Bluetooth functionality is in early testing; some controllers may have quirks. BT pads work as input in **any** USB output mode (OG Xbox, XInput, PS3, Switch, etc.) on Pico W / Pico 2 W, and also when outputting over **GPIO** to **PS1/PS2**, **Dreamcast**, **GameCube**, or **N64** (same as wired USB in those modes).
+
+**Pico W / Pico 2 W — important for DualShock 4 (DS4):** DS4 uses **Classic Bluetooth (BR/EDR)**. The same CYW43 radio also runs **BLE advertising** for the **phone / web app**. Running both at once often **drops the DS4 link** seconds after connect (blue LED then off). Firmware therefore **pauses BLE advertising** while a **Classic BT** gamepad is connected (DS4, DS3 over BT, Xbox 360 wireless adapter style links). **DualSense** and **Xbox Series (BLE)** mostly use **LE** and are unaffected by that pause.
+
+| Situation | What to do |
+|-----------|------------|
+| Use **DS4 / Classic BT** pad | Connect and play; web app BLE discovery is off until that pad disconnects. |
+| Use **Bluetooth** in the **web app** | Disconnect **Classic BT** controllers first, **or** plug the adapter in via **USB** and use **Connect via USB** in the app. |
+
+Full technical detail: **[Firmware/RP2040/docs/IMPROVEMENTS.md](Firmware/RP2040/docs/IMPROVEMENTS.md)** → *Pico W / Pico 2 W — DualShock 4 and Classic Bluetooth stability*.
+
 - Xbox Series, One, and Elite 2
 - Dualshock 3
 - Dualshock 4
@@ -108,67 +123,11 @@ Note: There are some third party controllers that can change their VID/PID, thes
 
 Please visit [**this page**](https://bluepad32.readthedocs.io/en/latest/supported_gamepads/) for a more comprehensive list of supported controllers and Bluetooth pairing instructions.
 
-# Features new to this fork:
-Note: These features have been added to the Pico W/ Pico 2 W firmware support, I do not have the other boards to test and implement the same fixes at this time.
+# Features new to this fork
 
-### Version 1.0.0.7a
-- **OG Xbox mode stability** — Report sending was reverted to v1.0.0a5 behaviour: the adapter only builds and sends the HID report when new gamepad input is available (`new_pad_in()`). Sending every poll cycle caused random disconnects on the Original Xbox; the reversion restores stable operation. Rumble handling is unchanged.
-- **PS2 (GPIO) / OPL stability** — The PS2 controller protocol response was reverted so the first response byte is the mode byte (no leading 0xFF). This restores compatibility with Open PS2 Loader and games; OPL no longer hangs at startup with the adapter connected. Core layout: Core1 runs Bluetooth when used; Core0 runs the main loop and PS2 device poll.
-- **Xbox 360 (XInput) wake from standby** — When the 360 was turned off via **Guide → Turn off console** (soft shutdown), you can power it back on with the controller: **press Guide (Home)** or **hold Start for 3 seconds** (Start is preferred on Xbox One/PS5 pads so the controller doesn’t turn off). **Disclaimer:** The console must have been started at least once with the adapter connected; wake does **not** work from a cold start (e.g. console just plugged in or after a full power loss). In that case turn the console on with the front power button first.
-- **PS3 wake from standby** — Same idea as 360: when the PS3 is in standby (turned off via **PS button → Turn off system**), you can wake it with **PS (Home)** or **hold Start for 3 seconds**—**only if the console keeps USB power when off**. Many PS3s cut power to the USB ports when shut down, so the adapter and controller disconnect; in that case wake is not possible. If your controller stays powered (e.g. charging light on) when the PS3 is off, wake may work. Same disclaimer as 360: no wake from cold start.
+Version history and release notes are in **[CHANGELOG.md](CHANGELOG.md)**. For detailed firmware improvements — **PS3**, **XInput / XSM3**, **OG Xbox**, **PS2/OPL**, **latency**, **Pico W Bluetooth (DS4 Classic BT, BLE coexistence, Xbox Series BLE)**, etc. — see **[Firmware/RP2040/docs/IMPROVEMENTS.md](Firmware/RP2040/docs/IMPROVEMENTS.md)**.
 
-### Version 1.0.0.6a
-- **PS1/PS2 (GPIO) output mode** — The adapter can output to a PS1 or PS2 console as a controller over GPIO (no USB device in this mode). Select via button combo **Start + B** or set a fixed driver build. **Wiring (standard Pico):** connect the board to the console’s controller port using DATA=GP19, COMMAND=GP20, ATTENTION/SEL=GP21, CLOCK=GP22, ACKNOWLEDGE=GP26. Plug your USB gamepad into the adapter’s USB port; the console sees a DualShock-style controller. _Protocol and PIO code ported from [PicoGamepadConverter](https://github.com/Loc15/PicoGamepadConverter)._
-- **GameCube (GPIO) output mode** — The adapter can output to a GameCube or Wii (GameCube ports) as a controller over a single DATA line. Select via button combo **Start + X** or set a fixed driver build. **Wiring (standard Pico):** DATA=GP19, GND=GND; connect to the console’s controller port (single wire + ground). Plug your USB gamepad into the adapter’s USB port. _JoyBus protocol and PIO code ported from [PicoGamepadConverter](https://github.com/Loc15/PicoGamepadConverter)._
-- **N64 (GPIO) output mode** — The adapter can output to a Nintendo 64 console as a controller over a single DATA line. Select via button combo **Start + Right Bumper** or set a fixed driver build. **Wiring (standard Pico):** DATA=GP19, GND=GND; connect to the N64 controller port (same pin as GameCube). Use any **wired (USB)** or **Bluetooth** (Pico W / Pico 2 W) gamepad as input. _Protocol and PIO send code ported from [pdaxrom/usb2n64-adapter](https://github.com/pdaxrom/usb2n64-adapter). Memory pak and rumble pak are not emulated._
-- **Dreamcast (Maple Bus)** — **Input:** Read a real Dreamcast controller over GPIO (Pin A=GP10, B=GP11). **Output:** Use a USB or **Bluetooth** gamepad to control a Dreamcast: select **Start + Y** for Dreamcast mode, connect your BT or USB pad, wire the adapter’s Maple Bus (GP10/GP11) to the console’s controller port. Core1 runs the Maple device (responds to device info and GET_CONDITION); Core0 feeds gamepad state from USB/BT. When input source is **Dreamcast GPIO**, the bus is used as host only (read a DC pad). See [Dreamcast Port guide](Firmware/RP2040/docs/Dreamcast_Port.md). Maple Bus from [DreamPicoPort](https://github.com/OrangeFox86/DreamPicoPort).
-- **Pin-outs and default mappings** — See [GPIO Output Pin-Out and Mappings](Firmware/RP2040/docs/GPIO_Output_Pinout_and_Mappings.md) for pin numbers (PS1/PS2, Dreamcast, GameCube, N64) and default button/stick mappings for each mode.
-- **Bluetooth input for PS1/PS2, GameCube, Dreamcast, and N64** — On **Pico W** (or Pico 2 W), you can use a **Bluetooth controller** as input while outputting to PS1, PS2, GameCube, Dreamcast, or N64. Select the mode (**Start + B**, **Start + X**, **Start + Y**, or **Start + Right Bumper**) as usual; pair your BT gamepad; the console sees the adapter as a controller. Wiring is the same for each mode (PS1/PS2: DATA/CMD/ATT/CLK/ACK; GameCube/N64: DATA=GP19 + GND; Dreamcast: GP10/GP11).
-- **GPIO input from real PS1/PS2, GameCube, N64, or Dreamcast controllers** — You can use a **real wired PS1/PS2, GameCube, N64, or Dreamcast controller** as the adapter’s input in two ways: (1) **Output to other consoles (Switch, Xbox, DInput, etc.):** set output mode (e.g. **Start + D-pad Down** for Switch), then hold **Start + Select** for ~2.5 s until the input source cycles to **PSX GPIO**, **GameCube GPIO**, **Dreamcast GPIO**, or **N64 GPIO**; plug the real controller into the GPIO pins and connect the adapter’s USB to the target console. (2) **Output to PS1/PS2, GameCube, or Dreamcast:** in that output mode, hold **Start + Select** to set input to the matching GPIO and plug in the real controller (same pins). **Wiring:** PS1/PS2: DATA=GP19, CMD=GP20, ATT=GP21, CLK=GP22; GameCube/N64: DATA=GP19 + GND; Dreamcast: GP10, GP11. _PSX host, JoyBus host, N64 host ported from [PicoGamepadConverter](https://github.com/Loc15/PicoGamepadConverter)._
-
-**PS2 output mode improvements (v1.0.0.6a):**
-- **Button polarity (active-low)** — The PS2 controller protocol uses active-low button bytes: **0xFF = released**, **0 = pressed**. The driver was sending 0 when no button was pressed, so the console read all buttons as pressed (e.g. constant D-pad Up and menu scrolling). Fixed by initialising the report with `buttons1 = buttons2 = 0xFF` and clearing bits when a button is pressed, so neutral/no-controller state is correct.
-- **Left stick Y axis** — Left analog stick up/down was inverted on output. The mapping for left stick Y was corrected so physical stick up corresponds to the value the PS2 expects for up.
-- **Protocol flow** — PS2 device (controller) protocol and escape-mode response lengths follow [PicoGamepadConverter](https://github.com/Loc15/PicoGamepadConverter) and [DS4toPS2](https://github.com/TonyMacDonald1995/DS4toPS2) (single response byte then command, 7-byte escape responses with leading 0x5A) for broad console compatibility.
-- **OPL (Open PS2 Loader)** — On Pico W, the main loop now drains all pending PS2 transactions each tick so rapid pad init (e.g. OPL at startup) does not desync or hang. **Keep the controller connected at boot** when using OPL; the PS2 pad driver typically does not re-detect controllers plugged in after an app has started, so unplugging then replugging will not give input in OPL. If OPL hangs (black screen) or inputs stop being registered, **power-cycle the Pico** (unplug and replug the adapter) so the PS2 link resets; the adapter also primes 0xFF after a desync drain so the next transaction is valid. **DualSense (PS5) over Bluetooth:** the Options button (Start) may not be reported as Start by the BT stack in some cases; if Options doesn’t work in OPL or in-game, try an Xbox or other controller, or use the DualSense over USB if your board supports it.
-
-### Version 1.0.0.5a
-- **Switch Pro emulation** — Switch output mode now emulates a **Nintendo Switch Pro Controller** over USB (report format, subcommands, init handshake). Face-button and report layout follow the standard Pro Controller protocol (bit layout aligned with hardware/reference). _Switch Pro protocol and button report layout reference: [retro-pico-switch](https://github.com/DavidPagels/retro-pico-switch) (N64/GameCube → Pico → Switch); Bluepad32 Switch parser used for validation._
-- **Waveshare RP2350-USB-A board support** — Build with `-DOGXM_BOARD=RP2350_USB_A` for the Waveshare RP2350-USB-A (wired USB host + RGB LED). _Board support from upstream [OGX-Mini](https://github.com/wiredopposite/OGX-Mini/commit/68bdec451077a33b0b1247ce01ed30e470163dea)._
-- **Additional board support** — **RP2350_ZERO** (Waveshare RP2350-Zero), **RP2040_XIAO** (Seeed Studio XIAO RP2040), and **RP2354**. All use the same Standard (PIO-USB host) firmware path; build with `-DOGXM_BOARD=RP2350_ZERO`, `RP2040_XIAO`, or `RP2354`. _Board support from [Sakura-Research-Lab/OGX-Mini-2026-Testing](https://github.com/Sakura-Research-Lab/OGX-Mini-2026-Testing)._
-- **8BitDo XInput (Xbox 360) fix** — Wired 8BitDo controllers (VID 0x2DC8, PID 0x3016 / 0x3106) are detected and sent a repeating LED-off keepalive so they stay connected and stable. _From [Sakura-Research-Lab/OGX-Mini-2026-Testing](https://github.com/Sakura-Research-Lab/OGX-Mini-2026-Testing)._
-- **Switch analog stick sensitivity** — Slight sensitivity increase (1.2× gain) for analog sticks in Switch Pro emulation mode; configurable via `STICK_GAIN_NUM` / `STICK_GAIN_DEN` in `Switch.cpp`.
-- **Original Xbox (OG) Guide button behavior** — In OG Xbox mode, the Guide (SYS) button is mapped to Start; **tap** = Start, **hold 1 s** = soft IGR (LT+RT+Start+Back), **hold 3 s** = system shutdown (LT+RT+D-pad Up+Back). _Implementation based on [Sakura-Research-Lab/OGX-Mini-2026-Testing](https://github.com/Sakura-Research-Lab/OGX-Mini-2026-Testing)._
-
-### Version 1.0.0.4a
-- **Wii (Wiimote) output mode** — On Pico W and Pico 2 W, build with `-DOGXM_FIXED_DRIVER=WII` for a Wii-only firmware. The adapter appears as a Wiimote over Bluetooth; use a USB gamepad on the external PIO USB port. Supports No Extension, Nunchuk, and Classic Controller report modes (cycle with Home + D-pad Down). See [Wii Mode Guide](Firmware/RP2040/docs/Wii_Mode_Guide.md). _Approach and mappings based on [PicoGamepadConverter](https://github.com/wiredopposite/PicoGamepadConverter)._
-- Xbox 360 no longer requires the USB patch to authenticate, uses the same authentication as Joypad-OS to do official handshake with Retail consoles. Homebrew/ Jailbreaking is no longer required to use the XINPUT mode on 360 but it will no longer output to PC.
-- **Rumble fix for Xbox 360 controllers** — Rumble on 360 pads is now handled correctly when using the adapter (including wireless RUMBLE_ENABLE sequence). _Xbox 360 vibration/rumble handling attributed to [faithvoid](https://github.com/faithvoid) on GitHub._
-- **Pico 2 / Pico 2 W build fixes** — Firmware builds and runs correctly on RP2350 (Pico 2 and Pico 2 W).
-- Improved latency on Xbox 360 and PS3 controllers.
-- **PS3 mode:** Home (PS) button works with DS4/DS5 over Bluetooth (8-frame latch so short taps register). Analog sticks now match DualShock 3 spec: full 0–255 range, center 0x80 (128), ~1.5% deadzone for accurate emulation. See [IMPROVEMENTS.md](Firmware/RP2040/docs/IMPROVEMENTS.md#ps3-mode--input-delays-stuck-inputs-home-button-and-analog-stick-emulation).
-- Added build flags so you can make it only output in a specific mode and disable mode switching.
-- Using a PS5 controller allows you to tap the touchpad to enable or disable the adaptive triggers.
-
-### Version 1.0.0.3a patched
-- Ability to emulate the GameCube controller adapter for Wii U. (Also tested on Switch 1/ 2)
-- Wii U & Switch Pro controllers are supported fully with working LT and RT
-- Wii Remotes are supported along with the following controllers connected: Nunchuck/ GameCube/ Wii Gamepad.
-- Disconnection Combo has been added: Start+Select for most controllers, L3+R3 for OUYA controllers.
-
-## Features new to v1.0.0
-- Bluetooth functionality for the Pico W, Pico 2 W, and Pico+ESP32.
-- Web application (connectable via USB or Bluetooth) for configuring deadzones and buttons mappings, supports up to 8 saved profiles.
-- Pi Pico 2 and Pico 2 W (RP2350) support.
-- Reduced latency by about 3-4 ms, graphs showing comparisons are coming.
-- 4 channel functionality, connect 4 Picos and use one Xbox 360 wireless adapter to control all 4.
-- Delayed USB mount until a controller is plugged in, useful for internal installation (non-Bluetooth boards only). 
-- Generic HID controller support.
-- Dualshock 3 emulation (minus gyros), rumble now works.
-- Steel Battalion controller emulation with a wireless Xbox 360 chatpad.
-- Xbox DVD dongle emulation. You must provide or dump your own dongle firmware, see the Tools directory.
-- Analog button support on OG Xbox and PS3.
-- RGB LED support for RP2040-Zero and Adafruit Feather boards.
+*Note: Many features were added and tested on Pico W / Pico 2 W; other boards may not have been tested for every change.*
 
 ## Planned additions from the original creator
 - More accurate report parser for unknown HID controllers
@@ -203,11 +162,39 @@ I've designed a PCB for the RP2040-Zero so you can make a small form-factor adap
 If you would like a prebuilt unit, you can purchase one, with cable and Xbox adapter included, from the original creators store: [**Etsy store**](https://www.etsy.com/listing/1426992904/ogx-mini-controller-adapter-for-original).
 
 ## Adding supported controllers
-If your third party controller isn't working, but the original version is listed above, send me the device's VID and PID and I'll add it so it's recognized properly.
+
+If your third‑party controller isn’t working but a similar one (e.g. same brand or protocol) is listed in [Wired Controllers](Firmware/RP2040/docs/Wired_Controllers.md), we can add support by registering its **VID** (Vendor ID) and **PID** (Product ID). Send those two values (and the controller name/model if you know it) so they can be added to the right list in `Firmware/RP2040/src/USBHost/HardwareIDs.h`.
+
+### How to get VID and PID
+
+**Windows**
+
+- **Device Manager:** Plug in the controller → open Device Manager → find it under “Sound, video and game controllers” or “Human Interface Devices” → right‑click → **Properties** → **Details** → **Property:** “Hardware Ids”. You’ll see something like `HID\VID_054C&PID_09CC`; **VID** is the hex after `VID_`, **PID** is the hex after `PID_` (e.g. VID `054C`, PID `09CC`).
+- **USBDeview** (NirSoft): Lists all USB devices with VID and PID in columns.
+
+**Linux**
+
+- Run `lsusb` with the controller plugged in. Each line is `Bus ... Device ... ID **vid:pid** Manufacturer Product`. Use the `vid` and `pid` from the line that matches your controller (e.g. `054c:09cc` → VID `054C`, PID `09CC`; we use uppercase hex in the code).
+- Alternatively: `lsusb -v` and look at `idVendor` and `idProduct` for the gamepad interface.
+
+**macOS**
+
+- **System Information:** Apple menu → **About This Mac** → **System Report** → **USB** (or **Bluetooth** if wireless). Select the controller; **Vendor ID** and **Product ID** are shown (often in decimal — convert to hex for the code, e.g. 1356 decimal → `054C` hex).
+- Or use **System Profiler** and open the USB section.
+
+**Web / gamepad API**
+
+- Some browser-based tools (e.g. [gamepad tester](https://gamepad-tester.com/) or similar) show the connected gamepad’s VID/PID in the page or in the browser’s device/Gamepad API info. Check the site’s instructions.
+
+When submitting, include **VID**, **PID**, and controller name (e.g. “8BitDo Pro 2 in DInput mode”). If the controller has multiple modes (XInput / DInput / Switch), note which mode you used when reading the IDs.
 
 ## Build
 ### RP2040
-Build with **CMake** from the `Firmware/RP2040` directory. You can compile for different boards with the CMake argument ```OGXM_BOARD```:
+Build with **CMake** from the `Firmware/RP2040` directory (or use the build scripts below). Prerequisites: git, python3, CMake, Ninja, and the GCC ARM toolchain. CMake will patch Bluepad32/BTStack and fetch submodules as needed.
+
+#### Board options (OGXM_BOARD)
+
+Use one of these values for **`OGXM_BOARD`** in a manual build, or pick the same board from the build script’s numbered list:
 
 - ```PI_PICO``` 
 - ```PI_PICO2``` 
@@ -218,7 +205,7 @@ Build with **CMake** from the `Firmware/RP2040` directory. You can compile for d
 - ```RP2350_ZERO``` (Waveshare RP2350-Zero)
 - ```RP2040_XIAO``` (Seeed Studio XIAO RP2040)
 - ```RP2354```
-- ```ADAFRUIT_FEATHER``` 
+- ```ADAFRUIT_FEATHER``` use the board’s **USB Type-A** port for the controller; 5V enable is GPIO 18, D+/D− are GPIO 16/17. If the controller is not detected, plug it in **after** the board has booted and ensure the green 5V LED next to the USB-A port is on.)
 - ```ESP32_BLUEPAD32_I2C```
 - ```ESP32_BLUERETRO_I2C``` 
 - ```EXTERNAL_4CH_I2C```
@@ -227,8 +214,27 @@ You can also set ```MAX_GAMEPADS``` (if &gt; 1, only DInput/PS3 and Switch Pro a
 
 You'll need git, python3, CMake, Ninja and the GCC ARM toolchain installed. CMake scripts will patch some files in Bluepad32 and BTStack and also make sure all git submodules (plus their submodules and dependencies) are downloaded.
 
-**Interactive build scripts:** From the project root, run **`scripts/build.sh`** (Linux/macOS) or **`scripts/build.ps1`** (Windows PowerShell) to be guided through board selection, default vs fixed output mode, Release/Debug, and build. The script checks for required tools, creates **`scripts/build`** for the build output, and on failure can optionally save a log in the `scripts` folder.
-Here's an example on Windows (manual build):
+#### Build scripts (recommended for new users)
+
+We provide interactive build scripts so you can build firmware without memorizing CMake options:
+
+| Platform | Command (run from project root) |
+|----------|----------------------------------|
+| **Linux / macOS** | `./scripts/build.sh` |
+| **Windows (PowerShell)** | `.\scripts\build.ps1` |
+
+The script will:
+
+1. **Check prerequisites** — Verifies that `git`, `python3` (or `python`), `cmake`, `ninja`, and `arm-none-eabi-gcc` are installed. If something is missing, it prints install hints (e.g. `apt install` on Debian/Ubuntu, `brew install` on macOS, Chocolatey on Windows).
+2. **Ask for your board** — Choose from a numbered list (Pi Pico, Pi Pico W, Pi Pico 2 W, RP2040-Zero, XIAO, Adafruit Feather, 4CH I2C, ESP32 hybrid, etc.).
+3. **Ask for build type** — **Default** (all output modes available via button combos) or **Fixed output mode** (e.g. Wii, GameCube, N64 — one mode only, no combo switching).
+4. **Ask for configuration** — **Release** (smaller, faster) or **Debug** (UART logging for troubleshooting).
+
+Build output (`.uf2`, `.elf`, etc.) is written to **`scripts/build/`**. To flash the board, copy the `.uf2` file from that folder to the Pico’s USB drive. If the build fails, the script can save a log to `scripts/build_log.txt` for debugging.
+
+#### Manual build (CMake from command line)
+
+If you prefer to run CMake yourself or use an IDE (e.g. VSCode CMake Tools), use the same options the scripts pass. Example (Windows, Pico W, Release):
 ```
 git clone --recursive https://github.com/MegaCadeDev/OGX-Mini-2026.git
 cd OGX-Mini-2026/Firmware/RP2040

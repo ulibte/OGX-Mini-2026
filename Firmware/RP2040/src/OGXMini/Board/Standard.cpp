@@ -31,7 +31,7 @@ void core1_task() {
     HostManager& host_manager = HostManager::get_instance();
     host_manager.initialize(_gamepads);
 
-    //Pico-PIO-USB will not reliably detect a hot plug on some boards, 
+    //Pico-PIO-USB will not reliably detect a hot plug on some boards,
     //monitor and init host stack after connection
     while(!board_api::usb::host_connected()) {
         sleep_ms(100);
@@ -43,7 +43,7 @@ void core1_task() {
     tuh_init(BOARD_TUH_RHPORT);
 
     uint32_t tid_feedback = TaskQueue::Core1::get_new_task_id();
-    TaskQueue::Core1::queue_delayed_task(tid_feedback, FEEDBACK_DELAY_MS, true, 
+    TaskQueue::Core1::queue_delayed_task(tid_feedback, FEEDBACK_DELAY_MS, true,
     [&host_manager] {
         host_manager.send_feedback();
     });
@@ -159,6 +159,9 @@ void standard::run() {
         if (input_src == HostInputSource::N64_GPIO) {
             GPIOHost::n64_host_init(0, 19);
         }
+        /* Present as USB device to console immediately so PS2/GC/Dreamcast see the adapter at boot
+         * (host_mounted() returns early for these drivers and never calls tud_init). */
+        tud_init(BOARD_TUD_RHPORT);
     } else {
         multicore_reset_core1();
         multicore_launch_core1(core1_task);
@@ -192,6 +195,7 @@ void standard::run() {
         TaskQueue::Core0::process_tasks();
         if (gpio_device_mode) {
             tuh_task();
+            tud_task();
             HostInputSource input_src = UserSettings::get_instance().get_input_source();
             if (input_src == HostInputSource::PSX_GPIO) {
                 GPIOHost::psx_host_poll(_gamepads[0]);

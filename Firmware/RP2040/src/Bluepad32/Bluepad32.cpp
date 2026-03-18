@@ -4,10 +4,15 @@
 #include <functional>
 #include <pico/mutex.h>
 #include <pico/cyw43_arch.h>
+#include <pico/time.h>
 
 #include "btstack_run_loop.h"
+#include "gap.h"
 #include "uni.h"
+#include "bt/uni_bt.h"
+#include "bt/uni_bt_bredr.h"
 #include "parser/uni_hid_parser_ds5.h"
+#include "parser/uni_hid_parser_xboxone.h"
 
 #include "sdkconfig.h"
 #include "Bluepad32/Bluepad32.h"
@@ -24,6 +29,18 @@ namespace bluepad32 {
 
 static constexpr uint32_t FEEDBACK_TIME_MS = 250;
 static constexpr uint32_t LED_CHECK_TIME_MS = 500;
+/** If no HID input report reaches us for this long while "connected", the BT link is zombie
+ *  (L2CAP stops delivering; OG Xbox then holds last USB report). Force disconnect so user can reconnect. */
+static constexpr uint32_t BT_INPUT_STALL_DISCONNECT_MS = 8000;
+/** BLE Xbox: host→pad output while idle (no rumble) or controller sleeps link ~1 min */
+static constexpr uint32_t XBOX_BLE_KEEPALIVE_MS = 12000;
+
+static uint32_t s_last_bt_input_ms[MAX_GAMEPADS]{};
+static uint32_t s_xbox_ble_ka_last_ms[MAX_GAMEPADS]{};
+/** Ignore Start+Select disconnect combo for this long after connect (DS4 can glitch both on first reports). */
+static uint32_t s_bt_disconnect_combo_grace_until_ms[MAX_GAMEPADS]{};
+/** DS4 BT: delay rumble output (host can request rumble immediately; early FF reports can drop link). */
+static uint32_t s_ps4_rumble_ok_ms[MAX_GAMEPADS]{};
 
 struct BTDevice {
     bool connected{false};
@@ -130,19 +147,51 @@ void set_rumble(uni_hid_device_t* bp_device, uint16_t length, uint8_t rumble_l, 
 static void send_feedback_cb(btstack_timer_source *ts)
 {
     uni_hid_device_t* bp_device = nullptr;
+    const uint32_t now_ms = to_ms_since_boot(get_absolute_time());
 
     for (uint8_t i = 0; i < MAX_GAMEPADS; ++i)
     {
-        if (!bt_devices_[i].connected || 
+        if (!bt_devices_[i].connected ||
             !(bp_device = uni_hid_device_get_instance_for_idx(i)))
         {
             continue;
         }
+        /* Virtual slot (e.g. DS4's BT "mouse"): never gets gamepad HID → would always stall-disconnect
+         * and drop the real controller. */
+        if (uni_hid_device_is_virtual_device(bp_device))
+            goto after_stall_check;
+        /* BLE Xbox (Series) often sends HID only on change — idle sticks look like "stall" and we
+         * would disconnect every few seconds. BR/EDR Xbox (1708) polls constantly; stall OK there. */
+        if (!(bp_device->controller_type == CONTROLLER_TYPE_XBoxOneController && bp_device->hids_cid != 0))
+        {
+        if (s_last_bt_input_ms[i] != 0 && (now_ms - s_last_bt_input_ms[i]) > BT_INPUT_STALL_DISCONNECT_MS)
+        {
+            printf("[Bluepad32] BT input stalled (%u ms); forcing disconnect (slot %u)\n",
+                   static_cast<unsigned>(now_ms - s_last_bt_input_ms[i]), static_cast<unsigned>(i));
+            uni_hid_device_disconnect(bp_device);
+            continue;
+        }
+        }
+    after_stall_check:
 
         Gamepad::PadOut gp_out = bt_devices_[i].gamepad->get_pad_out();
+        if (bp_device->controller_type == CONTROLLER_TYPE_XBoxOneController && bp_device->hids_cid != 0 &&
+            gp_out.rumble_l == 0 && gp_out.rumble_r == 0)
+        {
+            const uint32_t last_ka = s_xbox_ble_ka_last_ms[i];
+            if (last_ka == 0u || (now_ms - last_ka) >= XBOX_BLE_KEEPALIVE_MS)
+            {
+                uni_hid_parser_xboxone_ble_keepalive(bp_device);
+                s_xbox_ble_ka_last_ms[i] = now_ms;
+            }
+        }
         if (gp_out.rumble_l > 0 || gp_out.rumble_r > 0)
         {
-            set_rumble(bp_device, static_cast<uint16_t>(FEEDBACK_TIME_MS), gp_out.rumble_l, gp_out.rumble_r);
+            if (bp_device->controller_type == CONTROLLER_TYPE_PS4Controller &&
+                now_ms < s_ps4_rumble_ok_ms[i])
+                ;
+            else
+                set_rumble(bp_device, static_cast<uint16_t>(FEEDBACK_TIME_MS), gp_out.rumble_l, gp_out.rumble_r);
         }
     }
 
@@ -194,6 +243,44 @@ static uni_error_t device_discovered_cb(bd_addr_t addr, const char* name, uint16
 static void device_connected_cb(uni_hid_device_t* device) {
 }
 
+/** CYW43: resume OGX BLE advertising when no Classic (BR/EDR) gamepad remains connected. */
+static void ogxm_resume_ble_ads_if_no_acl_pad(int disconnected_idx) {
+#if defined(CONFIG_TARGET_PICO_W)
+    for (uint8_t i = 0; i < MAX_GAMEPADS; ++i) {
+        if (i == static_cast<unsigned>(disconnected_idx))
+            continue;
+        if (!bt_devices_[i].connected)
+            continue;
+        uni_hid_device_t* d = uni_hid_device_get_instance_for_idx(static_cast<int>(i));
+        if (!d || uni_bt_conn_get_state(&d->conn) != UNI_BT_CONN_STATE_DEVICE_READY)
+            continue;
+        if (gap_get_connection_type(d->conn.handle) == GAP_CONNECTION_ACL)
+            return;
+    }
+    gap_advertisements_enable(1);
+#endif
+}
+
+/** CYW43: periodic BR/EDR inquiry while a Classic ACL link is up can drop DS4/PS3 in ~1–2 s. */
+static void maybe_restart_bredr_inquiry_after_disconnect(int disconnected_idx) {
+#if defined(CONFIG_TARGET_PICO_W)
+    if (!uni_bt_enable_new_connections_is_enabled())
+        return;
+    for (uint8_t i = 0; i < MAX_GAMEPADS; ++i) {
+        if (i == static_cast<unsigned>(disconnected_idx))
+            continue;
+        if (!bt_devices_[i].connected)
+            continue;
+        uni_hid_device_t* d = uni_hid_device_get_instance_for_idx(static_cast<int>(i));
+        if (!d || uni_bt_conn_get_state(&d->conn) != UNI_BT_CONN_STATE_DEVICE_READY)
+            continue;
+        if (gap_get_connection_type(d->conn.handle) == GAP_CONNECTION_ACL)
+            return;
+    }
+    uni_bt_bredr_scan_start();
+#endif
+}
+
 static void device_disconnected_cb(uni_hid_device_t* device) {
     int idx = uni_hid_device_get_idx_for_instance(device);
     if (idx >= MAX_GAMEPADS || idx < 0) {
@@ -201,6 +288,10 @@ static void device_disconnected_cb(uni_hid_device_t* device) {
     }
 
     bt_devices_[idx].connected = false;
+    s_last_bt_input_ms[idx] = 0;
+    s_xbox_ble_ka_last_ms[idx] = 0;
+    s_bt_disconnect_combo_grace_until_ms[idx] = 0;
+    s_ps4_rumble_ok_ms[idx] = 0;
     prev_touchpad_clicked_[idx] = false;
     pending_adaptive_trigger_send_[idx] = false;
     bt_devices_[idx].gamepad->reset_pad_in();
@@ -216,15 +307,41 @@ static void device_disconnected_cb(uni_hid_device_t* device) {
         feedback_timer_set_ = false;
         btstack_run_loop_remove_timer(&feedback_timer_);
     }
+    maybe_restart_bredr_inquiry_after_disconnect(idx);
+    ogxm_resume_ble_ads_if_no_acl_pad(idx);
+    // Re-enable scanning when last device disconnects so the controller can reconnect without
+    // power-cycling the dongle (fixes "pairing mode but controller won't reconnect" in OG Xbox / BT mode).
+    if (!any_connected()) {
+        uni_bt_enable_new_connections_unsafe(true);
+    }
 }
 
-static uni_error_t device_ready_cb(uni_hid_device_t* device) {    
+static uni_error_t device_ready_cb(uni_hid_device_t* device) {
+    /* DS4/DS5 BT create a second "virtual mouse" device on the same ACL. OGX-Mini only uses
+     * gamepad input; accepting the virtual slot destabilized the link (disconnect ~2 s). */
+    if (uni_hid_device_is_virtual_device(device))
+        return UNI_ERROR_INVALID_CONTROLLER;
+
     int idx = uni_hid_device_get_idx_for_instance(device);
     if (idx >= MAX_GAMEPADS || idx < 0) {
         return UNI_ERROR_SUCCESS;
     }
 
     bt_devices_[idx].connected = true;
+#if defined(CONFIG_TARGET_PICO_W)
+    if (gap_get_connection_type(device->conn.handle) == GAP_CONNECTION_ACL) {
+        uni_bt_bredr_scan_stop();
+        gap_advertisements_enable(0);
+    }
+#endif
+    const uint32_t tnow = to_ms_since_boot(get_absolute_time());
+    s_last_bt_input_ms[idx] = tnow;
+    s_bt_disconnect_combo_grace_until_ms[idx] = tnow + 3500u;
+    if (device->controller_type == CONTROLLER_TYPE_PS4Controller)
+        s_ps4_rumble_ok_ms[idx] = tnow + 6000u;
+    /* Xbox BLE: 0 = send keepalive on next feedback tick (wakes Series/SW2 pad link immediately). */
+    if (device->controller_type == CONTROLLER_TYPE_XBoxOneController && device->hids_cid != 0)
+        s_xbox_ble_ka_last_ms[idx] = 0;
 
     // Set controller player LED to match slot (e.g. Wii U: LED 1 = player 1, LED 2 = player 2).
     // Same as Bluepad32 NINA platform: set_player_leds(d, BIT(idx)).
@@ -273,6 +390,8 @@ static void controller_data_cb(uni_hid_device_t* device, uni_controller_t* contr
 
     uni_gamepad_t *uni_gp = &controller->gamepad;
     int idx = uni_hid_device_get_idx_for_instance(device);
+    if (idx >= 0 && idx < static_cast<int>(MAX_GAMEPADS))
+        s_last_bt_input_ms[static_cast<unsigned>(idx)] = to_ms_since_boot(get_absolute_time());
 
 #if BLUEPAD32_UART_LOG_INPUT
     {
@@ -349,12 +468,17 @@ static void controller_data_cb(uni_hid_device_t* device, uni_controller_t* contr
 
     // Check for disconnect combo: Start+Select for most controllers, L3+R3 for OUYA (no Start/Select)
     static uint32_t disconnect_combo_hold_time[MAX_GAMEPADS] = {0};
+    const uint32_t now_cb = to_ms_since_boot(get_absolute_time());
+    const bool combo_grace =
+        (idx >= 0 && idx < MAX_GAMEPADS && now_cb < s_bt_disconnect_combo_grace_until_ms[idx]);
     bool is_ouya = (device->controller_type == CONTROLLER_TYPE_OUYAController);
     bool combo_pressed = is_ouya
         ? ((uni_gp->buttons & BUTTON_THUMB_L) && (uni_gp->buttons & BUTTON_THUMB_R))
         : ((uni_gp->misc_buttons & MISC_BUTTON_START) && (uni_gp->misc_buttons & MISC_BUTTON_BACK));
-    
-    if (combo_pressed) {
+
+    if (combo_grace) {
+        disconnect_combo_hold_time[idx] = 0;
+    } else if (combo_pressed) {
         disconnect_combo_hold_time[idx]++;
         // Require combo to be held for ~500ms (assuming ~60Hz callback rate, ~30 frames)
         if (disconnect_combo_hold_time[idx] >= 30) {
@@ -389,7 +513,7 @@ static void controller_data_cb(uni_hid_device_t* device, uni_controller_t* contr
     std::tie(gp_in.joystick_lx, gp_in.joystick_ly) = gamepad->scale_joystick_l<10>(uni_gp->axis_x, uni_gp->axis_y);
     std::tie(gp_in.joystick_rx, gp_in.joystick_ry) = gamepad->scale_joystick_r<10>(uni_gp->axis_rx, uni_gp->axis_ry);
 
-    gamepad->set_pad_in(gp_in);
+    gamepad->set_pad_in_from_bluetooth(gp_in);
 
     // PS5: defer adaptive trigger send to main loop so callback never does l2cap_send (reduces input lag)
     if (device->controller_type == CONTROLLER_TYPE_PS5Controller && idx >= 0 && idx < static_cast<int>(MAX_GAMEPADS)) {

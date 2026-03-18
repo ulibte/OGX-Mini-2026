@@ -355,7 +355,7 @@ void core1_task() {
     tuh_init(BOARD_TUH_RHPORT);
 
     uint32_t tid_feedback = TaskQueue::Core1::get_new_task_id();
-    TaskQueue::Core1::queue_delayed_task(tid_feedback, FEEDBACK_DELAY_MS, true, 
+    TaskQueue::Core1::queue_delayed_task(tid_feedback, FEEDBACK_DELAY_MS, true,
     [&host_manager] {
         host_manager.send_feedback();
     });

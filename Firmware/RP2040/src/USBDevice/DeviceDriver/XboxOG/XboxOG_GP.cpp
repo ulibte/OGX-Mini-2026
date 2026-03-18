@@ -1,6 +1,5 @@
 #include <cstring>
 
-#include "pico/time.h"
 #include "USBDevice/DeviceDriver/XboxOG/tud_xid/tud_xid.h"
 #include "USBDevice/DeviceDriver/XboxOG/XboxOG_GP.h"
 #include "Gamepad/Gamepad.h"
@@ -26,78 +25,47 @@ void XboxOGDevice::initialize()
 
 void XboxOGDevice::process(const uint8_t idx, Gamepad& gamepad)
 {
-    /* Reverted to v1.0.0a5 behaviour: only build/send report when new input (avoids random disconnects on OG Xbox). */
+    /* Build/send only when new input (match Team-Resurgent timing). Guide/Guide+Start combos for IGR/shutdown kept. */
 #if defined(CONFIG_OGXM_DEBUG)
     static uint32_t s_process_ticks = 0;
     static uint32_t s_send_count = 0;
     static uint32_t s_new_pad_in_count = 0;
+    static uint32_t s_last_new_pad_in_tick = 0;
+    static uint32_t s_ready_false_count = 0;  // had new_pad_in but send_report_ready(0) was false
     s_process_ticks++;
 #endif
     if (gamepad.new_pad_in())
     {
 #if defined(CONFIG_OGXM_DEBUG)
         s_new_pad_in_count++;
+        s_last_new_pad_in_tick = s_process_ticks;
 #endif
         std::memset(&in_report_.buttons, 0, 8);
         Gamepad::PadIn gp_in = gamepad.get_pad_in();
 
-        // Guide (SYS) button: tap = Start, hold 1s = soft IGR (LT+RT+Start+Back), hold 3s = shutdown (LT+RT+Up+Back)
-        bool sys_pressed = (gp_in.buttons & Gamepad::BUTTON_SYS) != 0;
-        if (sys_pressed && !sys_button_pressed_)
+        // Guide only = IGR (LT+RT+Start+Back).
+        // Shutdown = LT+RT+Back+White only (no Start on the wire — extra Start breaks many BIOSes).
+        // Guide+Menu (Start): works on PS5 / some pads. Xbox BT often drops Menu while Guide is held;
+        // use Guide+View (Back) instead on Xbox controllers.
+        bool guide_pressed = (gp_in.buttons & Gamepad::BUTTON_SYS) != 0;
+        bool start_pressed = (gp_in.buttons & Gamepad::BUTTON_START) != 0;
+        bool view_pressed = (gp_in.buttons & Gamepad::BUTTON_BACK) != 0;
+        const bool shutdown_combo =
+            guide_pressed && (start_pressed || view_pressed);
+        if (shutdown_combo)
         {
-            sys_button_pressed_ = true;
-            sys_button_press_time_ = get_absolute_time();
-            sys_button_combo_sent_ = false;
+            gp_in.trigger_l = gamepad.scale_trigger_l(0xFF);
+            gp_in.trigger_r = gamepad.scale_trigger_r(0xFF);
+            gp_in.buttons |= Gamepad::BUTTON_BACK;
+            gp_in.buttons |= Gamepad::BUTTON_LB;  // White
+            gp_in.buttons &= ~Gamepad::BUTTON_START;  // chord must not include Start
         }
-        else if (!sys_pressed && sys_button_pressed_)
+        else if (guide_pressed)
         {
-            sys_button_pressed_ = false;
-            uint64_t hold_time_ms = to_ms_since_boot(get_absolute_time()) - to_ms_since_boot(sys_button_press_time_);
-            if (hold_time_ms >= 3000)
-            {
-                gp_in.trigger_l = gamepad.scale_trigger_l(0xFF);
-                gp_in.trigger_r = gamepad.scale_trigger_r(0xFF);
-                gp_in.dpad |= Gamepad::DPAD_UP;
-                gp_in.buttons |= Gamepad::BUTTON_BACK;
-                sys_button_combo_sent_ = true;
-            }
-            else if (hold_time_ms >= 1000)
-            {
-                gp_in.trigger_l = gamepad.scale_trigger_l(0xFF);
-                gp_in.trigger_r = gamepad.scale_trigger_r(0xFF);
-                gp_in.buttons |= Gamepad::BUTTON_START;
-                gp_in.buttons |= Gamepad::BUTTON_BACK;
-                sys_button_combo_sent_ = true;
-            }
-            else
-            {
-                gp_in.buttons |= Gamepad::BUTTON_START;
-                sys_button_combo_sent_ = true;
-            }
-        }
-        else if (sys_pressed && !sys_button_combo_sent_)
-        {
-            uint64_t hold_time_ms = to_ms_since_boot(get_absolute_time()) - to_ms_since_boot(sys_button_press_time_);
-            if (hold_time_ms >= 3000)
-            {
-                gp_in.trigger_l = gamepad.scale_trigger_l(0xFF);
-                gp_in.trigger_r = gamepad.scale_trigger_r(0xFF);
-                gp_in.dpad |= Gamepad::DPAD_UP;
-                gp_in.buttons |= Gamepad::BUTTON_BACK;
-                sys_button_combo_sent_ = true;
-            }
-            else if (hold_time_ms >= 1000)
-            {
-                gp_in.trigger_l = gamepad.scale_trigger_l(0xFF);
-                gp_in.trigger_r = gamepad.scale_trigger_r(0xFF);
-                gp_in.buttons |= Gamepad::BUTTON_START;
-                gp_in.buttons |= Gamepad::BUTTON_BACK;
-                sys_button_combo_sent_ = true;
-            }
-            else
-            {
-                gp_in.buttons |= Gamepad::BUTTON_START;
-            }
+            gp_in.trigger_l = gamepad.scale_trigger_l(0xFF);
+            gp_in.trigger_r = gamepad.scale_trigger_r(0xFF);
+            gp_in.buttons |= Gamepad::BUTTON_START;
+            gp_in.buttons |= Gamepad::BUTTON_BACK;
         }
 
         switch (gp_in.dpad)
@@ -173,8 +141,12 @@ void XboxOGDevice::process(const uint8_t idx, Gamepad& gamepad)
 #if defined(CONFIG_OGXM_DEBUG)
         if (ready)
             s_send_count++;
-        if (s_process_ticks % 5000 == 0)
-            OGXM_LOG("XboxOG: process tick " + std::to_string(s_process_ticks) + " new_pad_in=" + std::to_string(s_new_pad_in_count) + " send_ready=" + std::to_string(ready) + " sent=" + std::to_string(s_send_count) + "\n");
+        else
+        {
+            s_ready_false_count++;
+            if (s_ready_false_count <= 3 || s_ready_false_count % 2000 == 0)
+                OGXM_LOG("XboxOG: new_pad_in but send_report_ready=false (count=" + std::to_string(s_ready_false_count) + ")\n");
+        }
 #endif
         if (ready)
         {
@@ -182,8 +154,29 @@ void XboxOGDevice::process(const uint8_t idx, Gamepad& gamepad)
         }
     }
 
+#if defined(CONFIG_OGXM_DEBUG)
+    // Periodic status every 10000 process ticks to see why it might stop responding
+    if (s_process_ticks > 0 && s_process_ticks % 10000 == 0)
+    {
+        uint32_t ticks_since_input = s_process_ticks - s_last_new_pad_in_tick;
+        OGXM_LOG("XboxOG: tick=" + std::to_string(s_process_ticks) +
+                 " new_pad_in=" + std::to_string(s_new_pad_in_count) +
+                 " sent=" + std::to_string(s_send_count) +
+                 " ready_false=" + std::to_string(s_ready_false_count) +
+                 " ticks_since_input=" + std::to_string(ticks_since_input) + "\n");
+        if (ticks_since_input > 20000)
+            OGXM_LOG("XboxOG: WARNING no new input for " + std::to_string(ticks_since_input) + " ticks (controller/driver may be idle or not sending)\n");
+    }
+#endif
+
     if (tud_xid::receive_report(0, reinterpret_cast<uint8_t*>(&out_report_), sizeof(XboxOG::GP::OutReport)))
     {
+#if defined(CONFIG_OGXM_DEBUG)
+        static uint32_t s_rumble_recv_count = 0;
+        s_rumble_recv_count++;
+        if (s_rumble_recv_count <= 3 || s_rumble_recv_count % 2000 == 0)
+            OGXM_LOG("XboxOG: rumble recv #" + std::to_string(s_rumble_recv_count) + "\n");
+#endif
         Gamepad::PadOut gp_out;
         gp_out.rumble_l = Scale::uint16_to_uint8(out_report_.rumble_l);
         gp_out.rumble_r = Scale::uint16_to_uint8(out_report_.rumble_r);
@@ -195,9 +188,14 @@ uint16_t XboxOGDevice::get_report_cb(uint8_t itf, uint8_t report_id, hid_report_
 {
 #if defined(CONFIG_OGXM_DEBUG)
     static uint32_t s_get_report_count = 0;
+    static uint32_t s_last_logged_get_report = 0;
     s_get_report_count++;
-    if (s_get_report_count <= 5 || s_get_report_count % 1000 == 0)
-        OGXM_LOG("XboxOG: get_report_cb #" + std::to_string(s_get_report_count) + "\n");
+    // Log first 5, then every 2000 so we see if Xbox stops polling (get_report_cb stops being called)
+    if (s_get_report_count <= 5 || s_get_report_count - s_last_logged_get_report >= 2000)
+    {
+        OGXM_LOG("XboxOG: get_report_cb #" + std::to_string(s_get_report_count) + " (Xbox polling)\n");
+        s_last_logged_get_report = s_get_report_count;
+    }
 #endif
     std::memcpy(buffer, &in_report_, sizeof(in_report_));
 	return sizeof(XboxOG::GP::InReport);

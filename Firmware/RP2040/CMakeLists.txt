@@ -542,6 +542,8 @@ endif()
 
 if(EN_BLUETOOTH)
     add_subdirectory(${BLUEPAD32_ROOT}/src/components/bluepad32 libbluepad32)
+    # Propagate to bluepad32 sources (e.g. DS4 parser): CYW43-specific link + setup path
+    target_compile_definitions(bluepad32 PRIVATE OGXM_BLUEPAD32_PICO_W=1)
 endif()
 
 add_subdirectory(${LIBFIXMATH_PATH} libfixmath)

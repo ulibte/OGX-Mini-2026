@@ -37,7 +37,7 @@ void init() {
     gpio_init(VCC_EN_PIN);
     gpio_set_dir(VCC_EN_PIN, GPIO_OUT);
     gpio_put(VCC_EN_PIN, 1);
-#endif 
+#endif
 
     gpio_init(PIO_USB_DP_PIN);
     gpio_set_dir(PIO_USB_DP_PIN, GPIO_IN);

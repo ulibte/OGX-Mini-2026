@@ -240,6 +240,9 @@ void pico_w::run() {
             GPIOHost::n64_host_init(0, 19);
         }
         bluepad32::set_gpio_device_process_callback(gpio_device_process_cb, nullptr);
+        /* Present as USB device to console immediately so PS2/GC/Dreamcast see the adapter at boot. */
+        tud_init(BOARD_TUD_RHPORT);
+        OGXM_LOG("PicoW run: tud_init done (GPIO device mode)\n");
         if (ps2_poll_mode) {
             /* PS2: BT on Core1 (like Switch/PS3); Core0 main loop does process() + psx_device_poll(). */
             OGXM_LOG("PicoW run: launching Core1 (BT)\n");
@@ -302,8 +305,7 @@ void pico_w::run() {
         }
         TaskQueue::Core0::process_tasks();
         if (!wii_mode) {
-            if (!gpio_device_mode)
-                tud_task();
+            tud_task();
             HostInputSource input_src = UserSettings::get_instance().get_input_source();
             if (input_src == HostInputSource::PSX_GPIO) {
                 GPIOHost::psx_host_poll(_gamepads[0]);
@@ -334,10 +336,9 @@ void pico_w::run() {
             OGXM_LOG("PicoW run: Wii main loop tick\n");
         }
         loop_count++;
-#if MAIN_LOOP_DELAY_US > 0
+        // Match Team-Resurgent: 1 ms delay so Core1 (BT stack) gets CPU; prevents random BT disconnect.
         if (!ps2_poll_mode)
-            sleep_us(MAIN_LOOP_DELAY_US);
-#endif
+            sleep_ms(1);
     }
 }
 
