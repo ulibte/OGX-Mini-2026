@@ -8,6 +8,7 @@
 #include <hardware/timer.h>
 #include <hardware/irq.h>
 #include <hardware/sync.h>
+#include <algorithm>
 
 #include "Board/Config.h"
 

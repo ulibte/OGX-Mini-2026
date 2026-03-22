@@ -66,7 +66,7 @@ void PSClassicHost::process_report(Gamepad& gamepad, uint8_t address, uint8_t in
     gamepad.set_pad_in(gp_in);
 
     tuh_hid_receive_report(address, instance);
-    std::memcpy(&prev_in_report_, &in_report, sizeof(PSClassic::InReport));
+    std::memcpy(&prev_in_report_, in_report, sizeof(PSClassic::InReport));
 }
 
 bool PSClassicHost::send_feedback(Gamepad& gamepad, uint8_t address, uint8_t instance)

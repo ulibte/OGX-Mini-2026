@@ -3,14 +3,16 @@
         {
             "name": "Pico",
             "includePath": [
-                "${workspaceFolder}/Firmware/external/pico-sdk/**"
+                "${workspaceFolder}/Firmware/RP2040/***",
+                "${workspaceFolder}/Firmware/RP2040/src/**",
             ],
             "forcedInclude": [
-                "${workspaceFolder}/Firmware/external/pico-sdk/src/common/pico_base_headers/include/pico.h",
-                "${workspaceFolder}/Firmware/RP2040/build/generated/pico_base/pico/config_autogen.h"
+                "${workspaceFolder}/Firmware/external/pico-sdk/src/common/pico_base_headers/include/pico.h"
             ],
-            "defines": [],
-            "compileCommands": "${workspaceFolder}/Firmware/RP2040/build/compile_commands.json",
+            "defines": [
+                "CFG_TUH_ENABLED=1",
+                "CONFIG_OGXM_DEBUG=1"
+            ],
             "cStandard": "c17",
             "cppStandard": "c++14",
             "intelliSenseMode": "linux-gcc-arm"

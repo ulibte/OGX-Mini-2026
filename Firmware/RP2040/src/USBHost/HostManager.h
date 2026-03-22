@@ -25,6 +25,7 @@
 #include "USBHost/HostDriver/XInput/XboxOG.h"
 #include "USBHost/HostDriver/N64/N64.h"
 #include "USBHost/HostDriver/HIDGeneric/HIDGeneric.h"
+#include "USBHost/HostDriver/DualPSX/DualPSX.h"
 
 #define MAX_INTERFACES MAX_GAMEPADS //This may change if support is added for audio or other chatpads beside 360 wireless
 
@@ -70,6 +71,7 @@ public:
 		Device& device_slot = device_slots_[dev_idx];
 		Interface& interface = device_slot.interfaces[instance];
 
+		OGXM_LOG("Driver type: %d\n", driver_type);
 		switch (driver_type)
 		{
 			case HostDriverType::PS5:
@@ -108,6 +110,9 @@ public:
 			case HostDriverType::XBOX360W: //Composite device, takes up all 4 gamepads when mounted
 				interface.driver = std::make_unique<Xbox360WHost>(gp_idx);
 				break;
+			case HostDriverType::DUAL_PSX:
+    			interface.driver = std::make_unique<DualPSXHost>(gp_idx);
+    			break;
 			default:
 				if (is_hid_gamepad(report_desc, desc_len))
 				{
@@ -121,8 +126,14 @@ public:
 		}
 
 		device_slot.address = address;
+		OGXM_LOG("Assigning to gamepad index: %d\n", gp_idx);
 		interface.gamepad_idx = gp_idx;
 		interface.gamepad = gamepads_[gp_idx];
+		OGXM_LOG("Initializing driver for address: %d, instance: %d\n", device_slot.address, instance);
+		if (report_desc) {
+			OGXM_LOG("HID Report Descriptor Length: %d\n", desc_len);
+			OGXM_LOG_HEX(report_desc, desc_len);
+		}
 		interface.driver->initialize(*interface.gamepad, device_slot.address, instance, report_desc, desc_len);
 
 		return true;

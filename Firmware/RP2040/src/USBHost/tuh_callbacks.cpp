@@ -19,10 +19,23 @@ void tuh_hid_mount_cb(uint8_t dev_addr, uint8_t instance, uint8_t const* desc_re
     uint16_t vid, pid;
     tuh_vid_pid_get(dev_addr, &vid, &pid);
 
+    OGXM_LOG("╔════════════════════════════════════════╗\n");
+    OGXM_LOG("║     🔌 HID DEVICE DETECTED 🔌        ║\n");
+    OGXM_LOG("╚════════════════════════════════════════╝\n");
+    OGXM_LOG("Device Address: %d | Instance: %d\n", dev_addr, instance);
+    OGXM_LOG("VID: 0x%04X | PID: 0x%04X\n", vid, pid);
+    OGXM_LOG("Report Descriptor Length: %d bytes\n\n", desc_len);
+    OGXM_LOG("Raw HID Descriptor (HEX):\n");
+    OGXM_LOG_HEX(desc_report, desc_len);
+    OGXM_LOG("\n");
+
     HostManager& host_manager = HostManager::get_instance();
 
     if (host_manager.setup_driver(HostManager::get_type({ vid, pid }), dev_addr, instance, desc_report, desc_len)) {
+        OGXM_LOG("✅ Driver setup SUCCESS!\n");
         OGXMini::host_mounted(true);
+    } else {
+        OGXM_LOG("❌ Driver setup FAILED!\n");
     }
 }
 

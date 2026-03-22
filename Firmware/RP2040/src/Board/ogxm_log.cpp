@@ -48,7 +48,7 @@ void log(const std::string& message) {
 
     mutex_enter_blocking(&log_mutex);
 
-    std::string formatted_msg = "OGXM: " + message;
+    std::string formatted_msg = "OGXM: " + message + "\r\n";
 
     uart_puts(DEBUG_UART_PORT, formatted_msg.c_str());
 
@@ -76,11 +76,11 @@ void log_hex(const uint8_t* data, size_t size) {
     for (uint16_t i = 0; i < size; ++i) {
         hex_stream << std::setw(2) << static_cast<int>(data[i]) << " ";
         if (++count == 16) {
-            hex_stream << "\n";
+            hex_stream << "\r\n";
             count = 0;
         }
     }
-    hex_stream << "\n";
+    hex_stream << "\r\n";
     log(hex_stream.str());
 }
 

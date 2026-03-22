@@ -9,7 +9,7 @@
 	url = https://github.com/XboxDev/dump-dvd-kit.git
 [submodule "Firmware/external/Pico-PIO-USB"]
 	path = Firmware/external/Pico-PIO-USB
-	url = https://github.com/wiredopposite/Pico-PIO-USB.git
+	url = https://github.com/sekigon-gonnoc/Pico-PIO-USB
 [submodule "WebApp"]
 	path = WebApp
 	url = https://github.com/wiredopposite/OGX-Mini-WebApp.git
@@ -19,3 +19,6 @@
 [submodule "Firmware/ESP32_Blueretro"]
 	path = Firmware/ESP32_Blueretro
 	url = https://github.com/wiredopposite/BlueRetro.git
+[submodule "pico-sdk"]
+	path = pico-sdk
+	url = https://github.com/raspberrypi/pico-sdk.git

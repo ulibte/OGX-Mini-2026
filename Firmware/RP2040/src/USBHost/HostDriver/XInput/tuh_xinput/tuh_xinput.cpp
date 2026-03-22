@@ -115,15 +115,13 @@ static void wait_for_tx_complete(uint8_t dev_addr, uint8_t ep_addr)
 
 bool send_ctrl_xfer(uint8_t dev_addr, const tusb_control_request_t* request, uint8_t* buffer, tuh_xfer_cb_t complete_cb, uintptr_t user_data)
 {
-    tuh_xfer_s transfer = 
-    {
-        .daddr = dev_addr,
-        .ep_addr = 0x00,
-        .setup = request, 
-        .buffer = buffer,
-        .complete_cb = complete_cb, 
-        .user_data = user_data
-    };
+    tuh_xfer_s transfer{};
+    transfer.daddr       = dev_addr;
+    transfer.ep_addr     = 0x00;
+    transfer.setup       = request;
+    transfer.buffer      = buffer;
+    transfer.complete_cb = complete_cb;
+    transfer.user_data   = user_data;
     return tuh_control_xfer(&transfer);
 }
 

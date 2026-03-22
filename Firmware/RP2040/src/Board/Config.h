@@ -11,6 +11,7 @@
 #define INTERNAL_4CH_I2C    7
 #define BOARDS_COUNT        8
 
+//#define SYSCLOCK_KHZ 120000
 #define SYSCLOCK_KHZ 240000
 
 #ifndef MAX_GAMEPADS

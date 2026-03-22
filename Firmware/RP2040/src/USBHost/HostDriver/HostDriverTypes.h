@@ -19,6 +19,7 @@ enum class HostDriverType
     XBOX360W,
     XBOX360,
     XBOX360_CHATPAD,
+    DUAL_PSX,
     HID_GENERIC
 };
 

@@ -24,6 +24,7 @@ set(BLUEPAD32_ROOT ${EXTERNAL_DIR}/bluepad32)
 set(BTSTACK_ROOT ${BLUEPAD32_ROOT}/external/btstack)
 set(PICO_BTSTACK_PATH ${BTSTACK_ROOT})
 set(LIBFIXMATH_PATH ${EXTERNAL_DIR}/libfixmath)
+set(PICO_SDK_PATH ${EXTERNAL_DIR}/pico-sdk)
 
 #get_pico_sdk(${EXTERNAL_DIR} ${PICOSDK_VERSION_TAG})
 init_git_submodules(${EXTERNAL_DIR}
@@ -182,6 +183,7 @@ if(EN_USB_HOST)
         # HID
         ${SRC}/USBHost/HostDriver/DInput/DInput.cpp
         ${SRC}/USBHost/HostDriver/PSClassic/PSClassic.cpp
+        ${SRC}/USBHost/HostDriver/DualPSX/DualPSX.cpp
         ${SRC}/USBHost/HostDriver/SwitchWired/SwitchWired.cpp
         ${SRC}/USBHost/HostDriver/SwitchPro/SwitchPro.cpp
         ${SRC}/USBHost/HostDriver/PS5/PS5.cpp
@@ -316,14 +318,10 @@ if(CMAKE_BUILD_TYPE STREQUAL "Debug")
     message(STATUS "Debug build enabled.")
     set(BUILD_STR "-Debug")
 
-    set(TX_PIN 0)
-    set(RX_PIN 1)
-    set(UART_PORT)
-
-    include(${CMAKE_CURRENT_LIST_DIR}/cmake/get_pico_uart_port.cmake)
-    get_pico_uart_port(${TX_PIN} UART_PORT)
-
-    message(STATUS "UART port: ${UART_PORT}, TX: ${TX_PIN}, RX: ${RX_PIN}")
+    # I set up the UART1 on gpio 8 (TX) and 9 (RX), I use my Usb-to-Uart on pins the pins 11(gpio 8), 12(gpio 9), 13(gnd), of the Pi Pico.
+    set(TX_PIN 8)
+    set(RX_PIN 9)
+    set(UART_PORT 1)
 
     pico_enable_stdio_uart(${FW_NAME} 1)
     target_compile_definitions(${FW_NAME} PRIVATE
@@ -332,14 +330,17 @@ if(CMAKE_BUILD_TYPE STREQUAL "Debug")
         PICO_DEFAULT_UART_RX_PIN=${RX_PIN}
     )
  
-    add_compile_definitions(CFG_TUSB_DEBUG=1)
+    add_compile_definitions(CFG_TUSB_DEBUG=3)
     add_compile_definitions(OGXM_DEBUG=1)
+    # define the CONFIG_OGXM_DEBUG used by headers so ogxm_log.cpp is compiled
+    add_compile_definitions(CONFIG_OGXM_DEBUG=1)
+    add_compile_definitions(CFG_TUH_ENABLED=1)
 
     target_compile_options(${FW_NAME} PRIVATE
         -Wall                # Enable most warnings
         -Wextra              # Enable extra warnings
-        -Wconversion         # Warn on type conversion issues
-        -Wsign-conversion    # Warn on sign conversion issues
+        # -Wconversion         # Warn on type conversion issues
+        # -Wsign-conversion    # Warn on sign conversion issues
         -Wno-unused-parameter # Disable warnings for unused parameters
         # -Werror              # Treat warnings as errors
     )
