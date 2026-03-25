@@ -8,6 +8,8 @@
 
 Firmware for the RP2040, capable of emulating gamepads for several game consoles. The firmware comes in many flavors, supported on the [Adafruit Feather USB Host board](https://www.adafruit.com/product/5723), Pi Pico, Pi Pico 2, Pi Pico W, Pi Pico 2 W, Waveshare RP2040-Zero, Waveshare RP2350-USB-A, Waveshare RP2350-Zero, Seeed Studio XIAO RP2040, RP2354, Pico/ESP32 hybrid, and a 4-Channel RP2040-Zero setup.
 
+**Development & maintainer support:** Firmware development, testing, and issue triage focus on **official or OEM boards**—hardware from the original creators, named retail/partner boards in this repo’s build options, and equivalent OEM designs. Unofficial clones, random AliExpress spin-offs, or homebrew PCBs that only “look like” a supported board are **not** guaranteed to work and are **out of scope** for development support (you may still flash and experiment at your own risk).
+
 [**Visit the web app here**](https://megacadedev.github.io/OGX-Mini-2026-WebApp/) to change your mappings and deadzone settings. To pair the OGX-Mini with the web app via USB, plug your controller in, then connect it to your PC, hold **Start + Left Bumper + Right Bumper** to enter web app mode. Click "Connect via USB" in the web app and select the OGX-Mini. You can also pair via Bluetooth, no extra steps are needed in that case. 
 
 [**Join the discord here!**](https://discord.gg/guaBh9JZQ)
@@ -81,13 +83,15 @@ See [**Wired Controllers**](Firmware/RP2040/docs/Wired_Controllers.md) for a ful
 - Dualshock 4 (PS4)
 - Dualsense (PS5)
 - Nintendo Switch Pro
-- Nintendo Switch wired
+- Nintendo Switch wired (including **Switch 2 Pro** PID `0x2069` when **wired**—see [Wired Controllers](Firmware/RP2040/docs/Wired_Controllers.md))
 - Nintendo 64 Generic USB
 - Playstation Classic
 - Generic DInput
 - Generic HID (mappings may need to be editted in the web app)
 
 Note: There are some third party controllers that can change their VID/PID, these might not work correctly.
+
+**Requesting support for a new controller:** run the capture tool in **[Tools/controller_capture](Tools/controller_capture/README.md)** on your PC, save the report, and attach it when you ask for a new **VID/PID** or mapping.
 
 ### Wireless adapters
 - Xbox 360 PC adapter (Microsoft or clones)
@@ -96,6 +100,8 @@ Note: There are some third party controllers that can change their VID/PID, thes
 
 ### Wireless Bluetooth controllers (Pico W & ESP32)
 **Note:** Bluetooth functionality is in early testing; some controllers may have quirks. BT pads work as input in **any** USB output mode (OG Xbox, XInput, PS3, Switch, etc.) on Pico W / Pico 2 W, and also when outputting over **GPIO** to **PS1/PS2**, **Dreamcast**, **GameCube**, or **N64** (same as wired USB in those modes).
+
+**DualShock 3 (PS3) — USB pairing to the adapter’s Bluetooth (Pico W / Pico 2 W):** The DS3 does not pair like a normal Bluetooth device. If you plug a **DualShock 3 into the adapter’s USB host port** while the firmware is running, it will **automatically program the controller with this Pico’s Bluetooth address** (same mechanism as the [Bluepad32 sixaxispairer](https://bluepad32.readthedocs.io/en/latest/pair_ds3/) tool). Then **unplug the USB cable** and press the **PS** button to connect wirelessly. If the radio was not ready at the moment the pad enumerated, pairing is retried on the next input reports until the address is available.
 
 **Pico W / Pico 2 W — important for DualShock 4 (DS4):** DS4 uses **Classic Bluetooth (BR/EDR)**. The same CYW43 radio also runs **BLE advertising** for the **phone / web app**. Running both at once often **drops the DS4 link** seconds after connect (blue LED then off). Firmware therefore **pauses BLE advertising** while a **Classic BT** gamepad is connected (DS4, DS3 over BT, Xbox 360 wireless adapter style links). **DualSense** and **Xbox Series (BLE)** mostly use **LE** and are unaffected by that pause.
 
@@ -125,7 +131,11 @@ Please visit [**this page**](https://bluepad32.readthedocs.io/en/latest/supporte
 
 # Features new to this fork
 
-Version history and release notes are in **[CHANGELOG.md](CHANGELOG.md)**. For detailed firmware improvements — **PS3**, **XInput / XSM3**, **OG Xbox**, **PS2/OPL**, **latency**, **Pico W Bluetooth (DS4 Classic BT, BLE coexistence, Xbox Series BLE)**, etc. — see **[Firmware/RP2040/docs/IMPROVEMENTS.md](Firmware/RP2040/docs/IMPROVEMENTS.md)**.
+Version history and release notes are in **[CHANGELOG.md](CHANGELOG.md)**. For detailed firmware improvements — **PS3**, **XInput / XSM3**, **OG Xbox**, **PS2/OPL**, **latency**, **Pico W Bluetooth (DS4 Classic BT, BLE coexistence, Xbox Series BLE)**, **Pico W / Pico 2 W PIO USB wired unplug detection**, etc. — see **[Firmware/RP2040/docs/IMPROVEMENTS.md](Firmware/RP2040/docs/IMPROVEMENTS.md)**.
+
+Highlights:
+
+- **Pico W / Pico 2 W — PIO USB wired unplug:** When you unplug the gamepad from the adapter’s USB host port, the firmware now **detects disconnect reliably** even though PIO USB owns D+/D− (GPIO line state often never shows a true “disconnected” idle). Detection uses **debounced** hints: **HCD port connect status**, **no TinyUSB configured device** (all `tuh_mounted` addresses), and **no host input reports** for a few seconds — so the TinyUSB/PIO host can **tear down**, **GPIO line IRQ monitoring** can resume, and **Bluetooth pairing** can work again without power-cycling or “shorting” the port. Details: [IMPROVEMENTS.md — Pico W PIO USB unplug](Firmware/RP2040/docs/IMPROVEMENTS.md#pico-w--pico-2-w--pio-usb-wired-controller-unplug-detection).
 
 *Note: Many features were added and tested on Pico W / Pico 2 W; other boards may not have been tested for every change.*
 
@@ -163,7 +173,17 @@ If you would like a prebuilt unit, you can purchase one, with cable and Xbox ada
 
 ## Adding supported controllers
 
-If your third‑party controller isn’t working but a similar one (e.g. same brand or protocol) is listed in [Wired Controllers](Firmware/RP2040/docs/Wired_Controllers.md), we can add support by registering its **VID** (Vendor ID) and **PID** (Product ID). Send those two values (and the controller name/model if you know it) so they can be added to the right list in `Firmware/RP2040/src/USBHost/HardwareIDs.h`.
+If your controller isn’t working but a similar one (e.g. same brand or protocol) is listed in [Wired Controllers](Firmware/RP2040/docs/Wired_Controllers.md), support often starts by registering its **VID** (Vendor ID) and **PID** (Product ID) in `Firmware/RP2040/src/USBHost/HardwareIDs.h`.
+
+**VID/PID alone is not always enough.** Many pads need the correct **USB mode** (XInput vs DInput vs Switch), matching **report layout**, or **driver-specific** handling. Dropping IDs into the list may do nothing or behave wrong if the device doesn’t match an existing parser.
+
+**What to do first:** run the **[controller capture tool](Tools/controller_capture/README.md)** on your PC, save the capture, and attach it when you ask for support (see that README for steps). Captures give us descriptors and traffic so we can see what the pad is really doing.
+
+**If a capture still isn’t enough to add support remotely:** **[donations via Ko-fi](https://ko-fi.com/megacadedev)** may be used toward **buying the same controller** so it can be tested and supported **when time and stock allow**—this is not a guaranteed timeline or commitment for every request.
+
+**What we prioritize for support (disclaimer):** Maintainer effort focuses on **OEM and name‑brand** controllers (first‑party console pads and established third‑party brands with stable USB identities). **Knock‑offs, unbranded clones, and “compatible” pads** that reuse random VID/PIDs or change behavior by batch are often **not practical to support**: we may be unable to source the **exact same** unit, and fixes may not transfer to other clones. You can still open an issue or share a capture; just expect clone/no‑name hardware to be **lower priority or declined**.
+
+When you write in, include **VID**, **PID**, controller **name/model**, and (if possible) a **capture** from the tool above. If the controller has multiple modes (XInput / DInput / Switch), say which mode you used.
 
 ### How to get VID and PID
 
@@ -186,7 +206,7 @@ If your third‑party controller isn’t working but a similar one (e.g. same br
 
 - Some browser-based tools (e.g. [gamepad tester](https://gamepad-tester.com/) or similar) show the connected gamepad’s VID/PID in the page or in the browser’s device/Gamepad API info. Check the site’s instructions.
 
-When submitting, include **VID**, **PID**, and controller name (e.g. “8BitDo Pro 2 in DInput mode”). If the controller has multiple modes (XInput / DInput / Switch), note which mode you used when reading the IDs.
+When submitting without a full capture, still include **VID**, **PID**, and controller name (e.g. “8BitDo Pro 2 in DInput mode”), and note which mode you used when reading the IDs.
 
 ## Build
 ### RP2040
@@ -250,7 +270,7 @@ Outputs (`.elf`, `.uf2`, etc.) are in the build directory; flash the `.uf2` to t
 |---------|-------------|
 | [Wii_Mode_Guide.md](Firmware/RP2040/docs/Wii_Mode_Guide.md) | Wii mode (build-option only): No Extension / Nunchuk / Classic, USB host, sync and auto-connect, button mapping. |
 | [PICO2W_WII_USB_SETUP.md](Firmware/RP2040/docs/PICO2W_WII_USB_SETUP.md) | Pico 2 W / Pico W: USB host wiring (PIO USB), pins, build, troubleshooting for Wii mode. |
-| [IMPROVEMENTS.md](Firmware/RP2040/docs/IMPROVEMENTS.md) | Firmware improvements: PS3 fixes, latency, XInput/360. |
+| [IMPROVEMENTS.md](Firmware/RP2040/docs/IMPROVEMENTS.md) | Firmware improvements: PS3 fixes, latency, XInput/360, Pico W Bluetooth, **Pico W PIO USB wired unplug detection**. |
 
 ### ESP32
 Please see the Hardware directory for a diagram showing how to hookup the ESP32 to your RP2040.

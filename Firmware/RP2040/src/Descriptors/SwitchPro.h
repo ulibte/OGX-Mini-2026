@@ -112,6 +112,10 @@ namespace SwitchPro
 	static constexpr uint16_t STICK_MAX = 0xFFF;
 
 	static constexpr uint8_t REPORT_ID_STANDARD = 0x30;
+	/** Switch 2 Pro (USB) full input reports use 0x09; layout matches 0x30 after id + timer. */
+	static constexpr uint8_t REPORT_ID_SWITCH2_FULL = 0x09;
+	/** Alternate full-report id seen on some Switch-family USB stacks. */
+	static constexpr uint8_t REPORT_ID_FULL_ALT   = 0x31;
 	static constexpr uint8_t REPORT_ID_SUBCMD   = 0x21;
 	static constexpr uint8_t REPORT_ID_USB_INIT = 0x81;
 	static constexpr int     REPORT_SIZE        = 64;

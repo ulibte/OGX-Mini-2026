@@ -122,13 +122,25 @@ else
   CMAKE_BUILD_TYPE=Release
 fi
 
+OGXM_SWITCH2_HID_RAW_LOG=OFF
+if [ "$config_choice" = "2" ]; then
+  echo ""
+  echo "Switch 2 Pro USB (PID 0x2069) debugging (Debug builds only):"
+  echo "  1) Off (default)"
+  echo "  2) UART: raw HID hex when report buffer changes (-DOGXM_SWITCH2_HID_RAW_LOG=ON)"
+  read -r -p "Choice [1-2]: " s2_raw_choice
+  if [ "$s2_raw_choice" = "2" ]; then
+    OGXM_SWITCH2_HID_RAW_LOG=ON
+  fi
+fi
+
 # --- Run build ---
 BUILD_DIR="$SCRIPT_DIR/build"
 rm -rf "$BUILD_DIR"
 mkdir -p "$BUILD_DIR"
 
 echo ""
-echo "Building: board=$OGXM_BOARD type=$CMAKE_BUILD_TYPE ${OGXM_FIXED_DRIVER:+fixed=$OGXM_FIXED_DRIVER}"
+echo "Building: board=$OGXM_BOARD type=$CMAKE_BUILD_TYPE ${OGXM_FIXED_DRIVER:+fixed=$OGXM_FIXED_DRIVER}${OGXM_SWITCH2_HID_RAW_LOG:+ switch2_raw_hid=ON}"
 echo "Output directory: $BUILD_DIR"
 echo ""
 
@@ -139,6 +151,7 @@ trap "rm -f '$BUILD_LOG'" EXIT
   cd "$BUILD_DIR"
   CMAKE_ARGS=(-G Ninja -DOGXM_BOARD="$OGXM_BOARD" -DCMAKE_BUILD_TYPE="$CMAKE_BUILD_TYPE")
   [ -n "$OGXM_FIXED_DRIVER" ] && CMAKE_ARGS+=(-DOGXM_FIXED_DRIVER="$OGXM_FIXED_DRIVER" -DOGXM_FIXED_DRIVER_ALLOW_COMBOS=OFF)
+  [ "$OGXM_SWITCH2_HID_RAW_LOG" = "ON" ] && CMAKE_ARGS+=(-DOGXM_SWITCH2_HID_RAW_LOG=ON)
   cmake "${CMAKE_ARGS[@]}" "$FIRMWARE_RP2040"
   ninja
 ) 2>&1 | tee "$BUILD_LOG"
@@ -147,6 +160,15 @@ BUILD_STATUS=${PIPESTATUS[0]}
 if [ "$BUILD_STATUS" -eq 0 ]; then
   echo ""
   echo "Build completed successfully. Output is in: $BUILD_DIR"
+  if [ "$CMAKE_BUILD_TYPE" = "Debug" ]; then
+    echo ""
+    echo "Debug logging (OGXM_LOG, Switch 2 raw HID): UART only at 115200 8N1 — not the Pico USB cable."
+    case "$OGXM_BOARD" in
+      PI_PICOW|PI_PICO2W) echo "  Wire USB-serial RX to GP4 (board TX), GND to GND. (UART1; avoids PIO USB on GP0/1.)" ;;
+      *) echo "  Wire USB-serial RX to GP0 (board TX), GND to GND." ;;
+    esac
+    echo "  Then: minicom -D /dev/ttyUSB0 -b 115200   (or screen, PuTTY, VS Code Serial Monitor)"
+  fi
 else
   echo ""
   echo "Build failed. You can save the output to a log file for troubleshooting."

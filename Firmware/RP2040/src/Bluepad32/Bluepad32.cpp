@@ -6,15 +6,23 @@
 #include <pico/cyw43_arch.h>
 #include <pico/time.h>
 
+#include <btstack.h>
 #include "btstack_run_loop.h"
 #include "gap.h"
 #include "uni.h"
 #include "bt/uni_bt.h"
 #include "bt/uni_bt_bredr.h"
+#include "uni_hid_device.h"
 #include "parser/uni_hid_parser_ds5.h"
 #include "parser/uni_hid_parser_xboxone.h"
 
 #include "sdkconfig.h"
+
+#if defined(CONFIG_TARGET_PICO_W) && defined(CONFIG_EN_USB_HOST)
+/** Core0 USB mux reads this while Core1 BT stack updates connections — mirror bt_devices_[].connected. */
+static std::atomic<bool> s_bt_any_connected_cached{false};
+#endif
+
 #include "Bluepad32/Bluepad32.h"
 #include "Board/board_api.h"
 #include "Board/ogxm_log.h"
@@ -34,6 +42,14 @@ static constexpr uint32_t LED_CHECK_TIME_MS = 500;
 static constexpr uint32_t BT_INPUT_STALL_DISCONNECT_MS = 8000;
 /** BLE Xbox: host→pad output while idle (no rumble) or controller sleeps link ~1 min */
 static constexpr uint32_t XBOX_BLE_KEEPALIVE_MS = 12000;
+
+/** One-second rumble when a pad becomes ready so the user knows it is connected. */
+static constexpr uint16_t CONNECT_RUMBLE_DURATION_MS = 1000;
+static constexpr uint8_t CONNECT_RUMBLE_WEAK = 160;
+static constexpr uint8_t CONNECT_RUMBLE_STRONG = 160;
+/** DS4: defer FF slightly — early output reports can destabilize the link (see s_ps4_rumble_ok_ms). */
+static constexpr uint16_t CONNECT_RUMBLE_DELAY_PS4_MS = 1200;
+static constexpr uint16_t CONNECT_RUMBLE_DELAY_DEFAULT_MS = 300;
 
 static uint32_t s_last_bt_input_ms[MAX_GAMEPADS]{};
 static uint32_t s_xbox_ble_ka_last_ms[MAX_GAMEPADS]{};
@@ -58,6 +74,26 @@ static btstack_timer_source_t gpio_process_timer_;
 static void (*gpio_process_cb_)(void*) = nullptr;
 static void* gpio_process_ctx_ = nullptr;
 
+static void (*s_pico_w_pio_usb_mux_tick)(void) = nullptr;
+static btstack_timer_source_t s_pico_w_usb_mux_timer_;
+static btstack_context_callback_registration_t s_pico_w_usb_mux_main_reg;
+
+// Timer callbacks must not call sleep_* (Pico panics). TinyUSB host enumeration does; run mux on main thread.
+static void pico_w_usb_mux_run_on_main(void* ctx) {
+    (void)ctx;
+    if (s_pico_w_pio_usb_mux_tick != nullptr) {
+        s_pico_w_pio_usb_mux_tick();
+    }
+}
+
+static void pico_w_usb_mux_timer_cb(btstack_timer_source_t* ts) {
+    s_pico_w_usb_mux_main_reg.callback = pico_w_usb_mux_run_on_main;
+    s_pico_w_usb_mux_main_reg.context = nullptr;
+    btstack_run_loop_execute_on_main_thread(&s_pico_w_usb_mux_main_reg);
+    btstack_run_loop_set_timer(ts, 1);
+    btstack_run_loop_add_timer(ts);
+}
+
 static void gpio_process_timer_cb(btstack_timer_source_t* ts) {
     if (gpio_process_cb_ != nullptr && gpio_process_ctx_ != nullptr) {
         gpio_process_cb_(gpio_process_ctx_);
@@ -74,6 +110,9 @@ static bool pending_adaptive_trigger_send_[MAX_GAMEPADS]{false};
 
 bool any_connected()
 {
+#if defined(CONFIG_TARGET_PICO_W) && defined(CONFIG_EN_USB_HOST)
+    return s_bt_any_connected_cached.load(std::memory_order_acquire);
+#else
     for (auto& device : bt_devices_)
     {
         if (device.connected)
@@ -82,6 +121,7 @@ bool any_connected()
         }
     }
     return false;
+#endif
 }
 
 bool is_wii_controller_connected(uint8_t idx)
@@ -205,7 +245,13 @@ static void check_led_cb(btstack_timer_source *ts)
 
     led_state = !led_state;
 
-    board_api::set_led(any_connected() ? true : led_state);
+#if defined(CONFIG_TARGET_PICO_W) && defined(CONFIG_EN_USB_HOST)
+    const bool wired_host_pad = board_api::usb::host_any_pad_mounted();
+#else
+    const bool wired_host_pad = false;
+#endif
+    /* Solid LED when a BT pad is connected or a wired USB host controller is active (Pico W mux). */
+    board_api::set_led((any_connected() || wired_host_pad) ? true : led_state);
 
     btstack_run_loop_set_timer(ts, LED_CHECK_TIME_MS);
     btstack_run_loop_add_timer(ts);
@@ -288,6 +334,16 @@ static void device_disconnected_cb(uni_hid_device_t* device) {
     }
 
     bt_devices_[idx].connected = false;
+    bool any_other_connected = false;
+    for (uint8_t i = 0; i < MAX_GAMEPADS; ++i) {
+        if (bt_devices_[i].connected) {
+            any_other_connected = true;
+            break;
+        }
+    }
+#if defined(CONFIG_TARGET_PICO_W) && defined(CONFIG_EN_USB_HOST)
+    s_bt_any_connected_cached.store(any_other_connected, std::memory_order_release);
+#endif
     s_last_bt_input_ms[idx] = 0;
     s_xbox_ble_ka_last_ms[idx] = 0;
     s_bt_disconnect_combo_grace_until_ms[idx] = 0;
@@ -296,14 +352,14 @@ static void device_disconnected_cb(uni_hid_device_t* device) {
     pending_adaptive_trigger_send_[idx] = false;
     bt_devices_[idx].gamepad->reset_pad_in();
 
-    if (!led_timer_set_ && !any_connected()) {
+    if (!led_timer_set_ && !any_other_connected) {
         led_timer_set_ = true;
         led_timer_.process = check_led_cb;
         led_timer_.context = nullptr;
         btstack_run_loop_set_timer(&led_timer_, LED_CHECK_TIME_MS);
         btstack_run_loop_add_timer(&led_timer_);
     }
-    if (feedback_timer_set_ && !any_connected()) {
+    if (feedback_timer_set_ && !any_other_connected) {
         feedback_timer_set_ = false;
         btstack_run_loop_remove_timer(&feedback_timer_);
     }
@@ -311,9 +367,26 @@ static void device_disconnected_cb(uni_hid_device_t* device) {
     ogxm_resume_ble_ads_if_no_acl_pad(idx);
     // Re-enable scanning when last device disconnects so the controller can reconnect without
     // power-cycling the dongle (fixes "pairing mode but controller won't reconnect" in OG Xbox / BT mode).
-    if (!any_connected()) {
+    if (!any_other_connected) {
         uni_bt_enable_new_connections_unsafe(true);
     }
+}
+
+static void ogxm_play_connection_rumble(uni_hid_device_t* device)
+{
+    if (device == nullptr || device->report_parser.play_dual_rumble == nullptr) {
+        return;
+    }
+    const uint16_t start_delay =
+        (device->controller_type == CONTROLLER_TYPE_PS4Controller)
+            ? CONNECT_RUMBLE_DELAY_PS4_MS
+            : CONNECT_RUMBLE_DELAY_DEFAULT_MS;
+    device->report_parser.play_dual_rumble(
+        device,
+        start_delay,
+        CONNECT_RUMBLE_DURATION_MS,
+        CONNECT_RUMBLE_WEAK,
+        CONNECT_RUMBLE_STRONG);
 }
 
 static uni_error_t device_ready_cb(uni_hid_device_t* device) {
@@ -328,6 +401,9 @@ static uni_error_t device_ready_cb(uni_hid_device_t* device) {
     }
 
     bt_devices_[idx].connected = true;
+#if defined(CONFIG_TARGET_PICO_W) && defined(CONFIG_EN_USB_HOST)
+    s_bt_any_connected_cached.store(true, std::memory_order_release);
+#endif
 #if defined(CONFIG_TARGET_PICO_W)
     if (gap_get_connection_type(device->conn.handle) == GAP_CONNECTION_ACL) {
         uni_bt_bredr_scan_stop();
@@ -369,6 +445,9 @@ static uni_error_t device_ready_cb(uni_hid_device_t* device) {
         btstack_run_loop_set_timer(&feedback_timer_, FEEDBACK_TIME_MS);
         btstack_run_loop_add_timer(&feedback_timer_);
     }
+
+    ogxm_play_connection_rumble(device);
+
     return UNI_ERROR_SUCCESS;
 }
 
@@ -583,6 +662,26 @@ void set_gpio_device_process_callback(void (*callback)(void* ctx), void* ctx) {
     gpio_process_ctx_ = ctx;
 }
 
+void set_pico_w_pio_usb_mux_tick(void (*tick_cb)(void)) {
+    s_pico_w_pio_usb_mux_tick = tick_cb;
+}
+
+void wired_usb_takeover_disconnect_bt() {
+#if defined(CONFIG_TARGET_PICO_W) && defined(CONFIG_EN_USB_HOST)
+    /* Core0 mux uses this atomic; disconnect callbacks run async on Core1. Clear immediately so
+     * we do not treat BT as active and tuh_deinit() wired USB during the disconnect window. */
+    s_bt_any_connected_cached.store(false, std::memory_order_release);
+#endif
+    for (uint8_t i = 0; i < MAX_GAMEPADS; ++i) {
+        uni_bt_disconnect_device_safe(i);
+    }
+    uni_bt_enable_new_connections_safe(false);
+}
+
+void wired_usb_release_enable_bt_pairing() {
+    uni_bt_enable_new_connections_safe(true);
+}
+
 void init(Gamepad(&gamepads)[MAX_GAMEPADS])
 {
     for (uint8_t i = 0; i < MAX_GAMEPADS; ++i)
@@ -604,6 +703,13 @@ void init(Gamepad(&gamepads)[MAX_GAMEPADS])
         gpio_process_timer_.context = nullptr;
         btstack_run_loop_set_timer(&gpio_process_timer_, GPIO_PROCESS_INTERVAL_MS);
         btstack_run_loop_add_timer(&gpio_process_timer_);
+    }
+
+    if (s_pico_w_pio_usb_mux_tick != nullptr) {
+        s_pico_w_usb_mux_timer_.process = pico_w_usb_mux_timer_cb;
+        s_pico_w_usb_mux_timer_.context = nullptr;
+        btstack_run_loop_set_timer(&s_pico_w_usb_mux_timer_, 1);
+        btstack_run_loop_add_timer(&s_pico_w_usb_mux_timer_);
     }
 }
 

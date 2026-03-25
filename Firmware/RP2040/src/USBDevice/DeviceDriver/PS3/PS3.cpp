@@ -172,8 +172,17 @@ void PS3Device::process(const uint8_t idx, Gamepad& gamepad)
     if (new_report_out_)
     {
         Gamepad::PadOut gp_out;
-        gp_out.rumble_l = report_out_.rumble.left_motor_force;
-        gp_out.rumble_r = report_out_.rumble.right_motor_on ? Range::MAX<uint8_t> : 0;
+        /* Windows DInput often leaves a small non-zero large-motor byte or sets the small-motor
+         * field to values other than 0/1; forwarding that blindly causes constant rumble on the BT pad. */
+        constexpr uint8_t HOST_LARGE_MOTOR_DEADZONE = 12;
+        uint8_t lf = report_out_.rumble.left_motor_force;
+        if (lf < HOST_LARGE_MOTOR_DEADZONE) {
+            lf = 0;
+        }
+        gp_out.rumble_l = lf;
+        /* DS3 output uses 0/1 for the small motor; only 0x01 counts as on (not "any non-zero"). */
+        const uint8_t rm = report_out_.rumble.right_motor_on;
+        gp_out.rumble_r = (rm == 1u) ? Range::MAX<uint8_t> : 0;
         gamepad.set_pad_out(gp_out);
         new_report_out_ = false;
     }

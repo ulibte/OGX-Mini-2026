@@ -5,9 +5,9 @@
 #include <cstdio>
 #include <string>
 #include <hardware/clocks.h>
+#include <hardware/gpio.h>
 #include <pico/multicore.h>
 #include <pico/time.h>
-
 #include "tusb.h"
 #include "bsp/board_api.h"
 
@@ -22,6 +22,7 @@
 #include "UserSettings/UserSettings.h"
 #include "Board/Config.h"
 #include "Board/board_api.h"
+#include "Board/board_api_private/board_api_private.h"
 #include "Board/ogxm_log.h"
 #include "Bluepad32/Bluepad32.h"
 #include "BLEServer/BLEServer.h"
@@ -29,6 +30,7 @@
 #include "TaskQueue/TaskQueue.h"
 
 #if defined(CONFIG_EN_USB_HOST)
+#include "host/hcd.h"
 #include "pio_usb.h"
 #include "USBHost/HostManager.h"
 #include <pico/flash.h>
@@ -52,6 +54,232 @@ extern "C" void wii_led_off(void) { board_api::set_led(false); }
 #endif
 
 Gamepad _gamepads[MAX_GAMEPADS];
+
+#if defined(CONFIG_EN_USB_HOST)
+// PIO USB host normally uses an alarm_pool SOF timer (~1 kHz). On Pico W that collides with BTstack / TaskQueue
+// timer IRQs (see prior irq_set_exclusive_handler assert) and fixed alarm indices (alarm 3 "already claimed").
+// Use skip_alarm_pool + pio_usb_host_frame() every ~1 ms from Core0 main loop (or Wii Core1 loop).
+// Do not run this from BTstack timers / execute_on_main_thread — TinyUSB uses sleep_ms during enumeration.
+
+// Debounce D+/D- in real time before tuh_init (not "N mux calls") so we can safely run multiple
+// host frames per main-loop visit when catching up SOFs without shortening this delay.
+constexpr int32_t PIO_LINE_STABLE_US = 40 * 1000;
+/** Wall-time spacing for send_feedback — do not tie to SOF catch-up tick count (bursts would hammer the device). */
+constexpr uint32_t USB_FEEDBACK_INTERVAL_MS = 200;
+
+static bool s_pio_usb_tuh_inited = false;
+/** When true, `pio_usb_host_frame()` runs from SDK repeating_timer at 1 kHz (not from main-loop catch-up). */
+static bool s_pico_w_usb_sof_hw_timer = false;
+static repeating_timer_t s_pico_w_usb_sof_timer;
+static bool s_bt_new_conn_off_for_usb = false;
+/** Line high continuously since this time (valid while s_usb_line_debounce_armed). */
+static absolute_time_t s_usb_line_high_since;
+static bool s_usb_line_debounce_armed = false;
+static uint32_t s_last_usb_feedback_wall_ms = 0;
+
+static bool pico_w_usb_sof_timer_cb(repeating_timer_t* rt) {
+    (void)rt;
+    pio_usb_host_frame();
+    return true;
+}
+
+static void pico_w_usb_sof_timer_start() {
+    if (s_pico_w_usb_sof_hw_timer) {
+        return;
+    }
+    /* skip_alarm_pool: PIO-USB does not start its own SOF timer. Main-loop + sleep_ms(1) cannot hold 1 kHz
+     * SOF under CYW43/BT load — wired input dies in ~1–2 s. Use SDK repeating_timer (separate from
+     * the alarm_pool that collides on Pico W) like a dedicated Core1 loop in Wii mode. */
+    if (add_repeating_timer_us(-1000, pico_w_usb_sof_timer_cb, nullptr, &s_pico_w_usb_sof_timer)) {
+        s_pico_w_usb_sof_hw_timer = true;
+    }
+}
+
+static void pico_w_usb_sof_timer_stop() {
+    if (!s_pico_w_usb_sof_hw_timer) {
+        return;
+    }
+    cancel_repeating_timer(&s_pico_w_usb_sof_timer);
+    s_pico_w_usb_sof_hw_timer = false;
+}
+
+/** Debounce any unplug hint (line / stack / idle) past USB bus reset glitches (10–50 ms). */
+constexpr int32_t USB_UNPLUG_DEBOUNCE_US = 60 * 1000;
+/** If D+/D− never read as SE0 under PIO, IN reports stop when the cable is pulled — detect unplug this way.
+ *  Keep high enough that HID pads that only report on change are not mistaken for unplug. */
+constexpr uint32_t USB_UNPLUG_NO_INPUT_MS = 3000;
+static bool s_usb_unplug_debounce_armed = false;
+static absolute_time_t s_usb_unplug_debounce_since;
+
+static bool pico_w_tuh_any_device_configured() {
+    /* usbh.c: TOTAL_DEVICES = CFG_TUH_DEVICE_MAX + CFG_TUH_HUB (hub consumes one address slot). */
+    const uint8_t addr_max = static_cast<uint8_t>(CFG_TUH_DEVICE_MAX + CFG_TUH_HUB);
+    for (uint8_t d = 1; d <= addr_max; ++d) {
+        if (tuh_mounted(d)) {
+            return true;
+        }
+    }
+    return false;
+}
+
+static void pico_w_usb_host_full_stop() {
+    pico_w_usb_sof_timer_stop();
+    (void)tuh_deinit(BOARD_TUH_RHPORT);
+    s_pio_usb_tuh_inited = false;
+    s_usb_line_debounce_armed = false;
+    s_usb_unplug_debounce_armed = false;
+    /* GPIO IRQs were suspended for PIO; restore so unplug/plug is visible again without "shorting" the port. */
+    board_api_usbh::enable_host_line_irq_monitoring();
+}
+
+/**
+ * Runs every ~1 ms from Core0 (normal Pico W modes) or from Core1 (GPIO modes that block Core0 in run_task).
+ * - If any BT gamepad is connected: PIO USB host is not initialized (wired ignored until BT disconnects).
+ * - If a wired device enumerates on the PIO port: disconnect BT pads and block new BT connections until unplugged.
+ */
+static void pico_w_pio_usb_bt_mux_tick() {
+    HostManager& hm = HostManager::get_instance();
+    const bool bt_active = bluepad32::any_connected();
+    const bool wired_mounted = hm.any_mounted();
+
+    /* Only tear down PIO USB host for BT when no wired pad is mounted. Otherwise a slow BT
+     * disconnect after wired takeover (or a stray ACL/device_ready) leaves s_bt_any_connected_cached
+     * true for ~seconds while USB is working — we would tuh_deinit() here and kill wired input
+     * until replug. Wired wins while HostManager still has a device slot. */
+    if (bt_active && !wired_mounted) {
+        if (s_pio_usb_tuh_inited) {
+            pico_w_usb_host_full_stop();
+        }
+        return;
+    }
+
+    /* Unplug: pio_usb_bus_get_line_state() uses gpio_get on D+/D− while PIO owns them — often never
+     * reads SE0 when the cable is removed (floating FS-idle), so HCD "connect" stays true. Use any of:
+     * HCD line, TinyUSB configured device gone, or no process_report() for USB_UNPLUG_NO_INPUT_MS. */
+    if (s_pio_usb_tuh_inited) {
+        const bool hcd_line_connected = hcd_port_connect_status(BOARD_TUH_RHPORT);
+        board_api_usbh::store_host_line_connected(hcd_line_connected);
+
+        const bool tuh_still_has_device = pico_w_tuh_any_device_configured();
+        const uint32_t input_idle_ms = hm.usb_host_input_idle_ms();
+
+        const bool unplug_hint = wired_mounted &&
+            (!hcd_line_connected || !tuh_still_has_device || (input_idle_ms >= USB_UNPLUG_NO_INPUT_MS));
+
+        if (unplug_hint) {
+            if (!s_usb_unplug_debounce_armed) {
+                s_usb_unplug_debounce_armed = true;
+                s_usb_unplug_debounce_since = get_absolute_time();
+            } else if (absolute_time_diff_us(s_usb_unplug_debounce_since, get_absolute_time()) >= USB_UNPLUG_DEBOUNCE_US) {
+                pico_w_usb_host_full_stop();
+                s_bt_new_conn_off_for_usb = false;
+                bluepad32::wired_usb_release_enable_bt_pairing();
+                return;
+            }
+        } else {
+            s_usb_unplug_debounce_armed = false;
+        }
+    }
+
+    if (!s_pio_usb_tuh_inited) {
+        // Sample D+/D− directly: host_connected() is IRQ-driven and can stay false if an edge was
+        // missed (Core0 load, CYW43), or the ISR left IRQs disabled while lines were high.
+        // Pins are still GPIO inputs here; PIO has not taken over yet.
+        const bool line = (gpio_get(PIO_USB_DP_PIN) != 0) || (gpio_get(PIO_USB_DP_PIN + 1) != 0);
+        if (!line) {
+            s_usb_line_debounce_armed = false;
+            return;
+        }
+        if (!s_usb_line_debounce_armed) {
+            s_usb_line_high_since = get_absolute_time();
+            s_usb_line_debounce_armed = true;
+        }
+        if (absolute_time_diff_us(s_usb_line_high_since, get_absolute_time()) < PIO_LINE_STABLE_US) {
+            return;
+        }
+        // main() already called flash_safe_execute_core_init() on Core0; do not call from Core1 BT timer (deadlock risk).
+        hm.initialize(_gamepads);
+        // PIO USB takes over D+/D−; GPIO edge IRQs on those pins must be off or IO_IRQ floods and BT stalls.
+        board_api_usbh::suspend_line_irq();
+        pio_usb_configuration_t pio_cfg = PIO_USB_CONFIG;
+        pio_cfg.alarm_pool = nullptr;
+        pio_cfg.skip_alarm_pool = true;
+        pio_cfg.tx_ch = 2;
+        tuh_configure(BOARD_TUH_RHPORT, TUH_CFGID_RPI_PIO_USB_CONFIGURATION, &pio_cfg);
+        if (!tuh_init(BOARD_TUH_RHPORT)) {
+            s_usb_line_debounce_armed = false;
+            return;
+        }
+        s_pio_usb_tuh_inited = true;
+        pico_w_usb_sof_timer_start();
+    }
+
+    if (!s_pico_w_usb_sof_hw_timer) {
+        pio_usb_host_frame();
+    }
+
+    // Host drivers (e.g. Xbox360W chatpad) queue Core1 delayed tasks; safe to drain from Core0 (spinlocks).
+    TaskQueue::Core1::process_tasks();
+
+    tuh_task();
+
+    {
+        const uint32_t now_ms = to_ms_since_boot(get_absolute_time());
+        if ((now_ms - s_last_usb_feedback_wall_ms) >= USB_FEEDBACK_INTERVAL_MS) {
+            s_last_usb_feedback_wall_ms = now_ms;
+            hm.send_feedback();
+        }
+    }
+
+    if (wired_mounted) {
+        if (!s_bt_new_conn_off_for_usb) {
+            bluepad32::wired_usb_takeover_disconnect_bt();
+            s_bt_new_conn_off_for_usb = true;
+        }
+    } else {
+        if (s_bt_new_conn_off_for_usb) {
+            bluepad32::wired_usb_release_enable_bt_pairing();
+            s_bt_new_conn_off_for_usb = false;
+        }
+    }
+}
+
+void pico_w::poll_usb_host_mux_from_core0() {
+    static absolute_time_t next_usb_mux;
+    static bool usb_mux_time_inited = false;
+    if (!usb_mux_time_inited) {
+        next_usb_mux = get_absolute_time();
+        usb_mux_time_inited = true;
+    }
+    absolute_time_t now = get_absolute_time();
+
+    if (!s_pio_usb_tuh_inited) {
+        if (absolute_time_diff_us(next_usb_mux, now) < 0) {
+            return;
+        }
+        next_usb_mux = delayed_by_us(next_usb_mux, 1000);
+        pico_w_pio_usb_bt_mux_tick();
+        return;
+    }
+
+    if (s_pico_w_usb_sof_hw_timer) {
+        /* SOF is 1 kHz from repeating_timer; run TinyUSB + mux every visit (no 1 ms gate). */
+        pico_w_pio_usb_bt_mux_tick();
+        return;
+    }
+
+    if (absolute_time_diff_us(next_usb_mux, now) < 0) {
+        return;
+    }
+    // Fallback if hardware SOF timer failed: manual frames + catch-up (Wii Core1–style burst).
+    constexpr int k_max_catchup_frames = 500;
+    for (int n = 0; n < k_max_catchup_frames && absolute_time_diff_us(next_usb_mux, now) >= 0; ++n) {
+        next_usb_mux = delayed_by_us(next_usb_mux, 1000);
+        pico_w_pio_usb_bt_mux_tick();
+        now = get_absolute_time();
+    }
+}
+#endif // CONFIG_EN_USB_HOST
 
 static DeviceDriver* s_gpio_device_driver = nullptr;
 static void gpio_device_process_cb(void* ctx) {
@@ -94,10 +322,9 @@ void core1_task_wii_usb_host() {
     }
     OGXM_LOG("WII Core1: host_connected\n");
 
-    // Use an unused hardware alarm for PIO USB host so TaskQueue Core1 can keep alarm 2 (avoids conflict; alarm 3 may be claimed on Pico 2 W)
-    static alarm_pool_t* s_wii_usb_alarm_pool = alarm_pool_create_with_unused_hardware_alarm(1);
     pio_usb_configuration_t pio_cfg = PIO_USB_CONFIG;
-    pio_cfg.alarm_pool = s_wii_usb_alarm_pool;
+    pio_cfg.alarm_pool = nullptr;
+    pio_cfg.skip_alarm_pool = true;
     // CYW43 (BT on Core0) claims DMA 0 and 1; use channel 2 for PIO USB TX to avoid "DMA channel 0 is already claimed"
     pio_cfg.tx_ch = 2;
     tuh_configure(BOARD_TUH_RHPORT, TUH_CFGID_RPI_PIO_USB_CONFIGURATION, &pio_cfg);
@@ -117,15 +344,22 @@ void core1_task_wii_usb_host() {
     uint32_t gp_check_ticks = 0;
 #endif
 
+    absolute_time_t next_pio_host_frame = get_absolute_time();
     while (true) {
+        absolute_time_t now = get_absolute_time();
+        while (absolute_time_diff_us(next_pio_host_frame, now) >= 0) {
+            pio_usb_host_frame();
+            next_pio_host_frame = delayed_by_us(next_pio_host_frame, 1000);
+            now = get_absolute_time();
+        }
         TaskQueue::Core1::process_tasks();
         tuh_task();
         Wii::gamepad_to_wiimote_report(_gamepads[0], &s_wiimote_report);
 
 #if !defined(CONFIG_OGXM_FIXED_DRIVER) || defined(CONFIG_OGXM_FIXED_DRIVER_ALLOW_COMBOS)
-        uint32_t now = board_api::ms_since_boot();
-        if (now - last_gp_check_ms >= static_cast<uint32_t>(UserSettings::GP_CHECK_DELAY_MS)) {
-            last_gp_check_ms = now;
+        const uint32_t now_ms = board_api::ms_since_boot();
+        if (now_ms - last_gp_check_ms >= static_cast<uint32_t>(UserSettings::GP_CHECK_DELAY_MS)) {
+            last_gp_check_ms = now_ms;
             UserSettings& user_settings = UserSettings::get_instance();
             bool changed = user_settings.check_for_driver_change(_gamepads[0]);
 #if defined(CONFIG_OGXM_DEBUG)
@@ -157,6 +391,7 @@ void core1_task() {
     OGXM_LOG("PicoW Core1: set_led(true) done\n");
     BLEServer::init_server(_gamepads);
     OGXM_LOG("PicoW Core1: BLEServer init done, entering run_task\n");
+    /* PIO USB mux runs on Core0 main loop (poll_usb_host_mux_from_core0), not here — avoids sleep_ms panic. */
     bluepad32::run_task(_gamepads);
 }
 
@@ -195,6 +430,9 @@ void pico_w::initialize() {
 
     DeviceManager& device_manager = DeviceManager::get_instance();
     device_manager.initialize_driver(user_settings.get_current_driver(), _gamepads);
+#if defined(CONFIG_EN_USB_HOST)
+    HostManager::get_instance().initialize(_gamepads);
+#endif
     OGXM_LOG("PicoW init: driver inited\n");
 }
 
@@ -265,6 +503,9 @@ void pico_w::run() {
             }
             /* Let Core1 reach flash_safe_execute_core_init() before we enter run_task (BT stack may touch flash). */
             sleep_ms(100);
+#if defined(CONFIG_EN_USB_HOST)
+            bluepad32::set_pico_w_pio_usb_mux_tick(pico_w_pio_usb_bt_mux_tick);
+#endif
             bluepad32::run_task(_gamepads);  /* never returns */
         }
     } else {
@@ -336,9 +577,25 @@ void pico_w::run() {
             OGXM_LOG("PicoW run: Wii main loop tick\n");
         }
         loop_count++;
-        // Match Team-Resurgent: 1 ms delay so Core1 (BT stack) gets CPU; prevents random BT disconnect.
-        if (!ps2_poll_mode)
-            sleep_ms(1);
+        /* Run USB host mux after all heavy work (device_driver->process, etc.) so pio_usb_host_frame
+         * catch-up covers the whole iteration; otherwise SOFs can lag for tens of ms and wired input dies. */
+#if defined(CONFIG_EN_USB_HOST)
+        if (!wii_mode) {
+            pico_w::poll_usb_host_mux_from_core0();
+        }
+#endif
+        /* With hardware SOF timer, Core0 can sleep briefly; wired USB still needs tuh_task often.
+         * sleep_ms(1) alone starved TinyUSB vs Wii Core1's tight loop. */
+        if (!ps2_poll_mode) {
+#if defined(CONFIG_EN_USB_HOST)
+            if (!wii_mode && s_pio_usb_tuh_inited && HostManager::get_instance().any_mounted()) {
+                sleep_us(400);
+            } else
+#endif
+            {
+                sleep_ms(1);
+            }
+        }
     }
 }
 

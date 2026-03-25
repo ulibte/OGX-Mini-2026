@@ -119,6 +119,8 @@ set(INC_DIRS_BOARD
 
 # Config options
 
+option(OGXM_SWITCH2_HID_RAW_LOG "UART: log Switch 2 Pro (0x2069) 64B HID when the 3 digital button bytes change only (Debug)" OFF)
+
 set(MAX_GAMEPADS 1 CACHE STRING "Set number of gamepads, 1 to 4")
 if (MAX_GAMEPADS GREATER 4 OR MAX_GAMEPADS LESS 1)
     message(FATAL_ERROR "MAX_GAMEPADS must be between 1 and 4")
@@ -297,6 +299,7 @@ if(EN_USB_HOST)
         ${SRC}/USBHost/HostDriver/PSClassic/PSClassic.cpp
         ${SRC}/USBHost/HostDriver/SwitchWired/SwitchWired.cpp
         ${SRC}/USBHost/HostDriver/SwitchPro/SwitchPro.cpp
+        ${SRC}/USBHost/HostDriver/SwitchPro/Switch2ProHost.cpp
         ${SRC}/USBHost/HostDriver/PS5/PS5.cpp
         ${SRC}/USBHost/HostDriver/PS4/PS4.cpp
         ${SRC}/USBHost/HostDriver/PS3/PS3.cpp
@@ -453,7 +456,7 @@ add_executable(${FW_NAME} ${SOURCES_BOARD})
 set(BUILD_STR "")
 
 if(CMAKE_BUILD_TYPE STREQUAL "Debug")
-    message(STATUS "Debug build enabled (UART logging).")
+    message(STATUS "Debug build enabled (UART logging at 115200; TinyUSB host prevents USB CDC stdio — use UART TX pin, see CMakeLists UART message).")
     set(BUILD_STR "-Debug")
 
     # Pico W/2W: use UART1 on GP4 (TX) / GP5 (RX) - valid UART pins, avoids PIO USB (GP0/1) in Wii mode
@@ -472,6 +475,7 @@ if(CMAKE_BUILD_TYPE STREQUAL "Debug")
 
     message(STATUS "UART port: ${UART_PORT}, TX: ${TX_PIN}, RX: ${RX_PIN}")
 
+    # USB CDC stdio is disabled by Pico SDK when TinyUSB host is linked; OGXM_LOG uses printf → UART only.
     pico_enable_stdio_usb(${FW_NAME} 0)
     pico_enable_stdio_uart(${FW_NAME} 1)
     target_compile_definitions(${FW_NAME} PRIVATE
@@ -483,6 +487,11 @@ if(CMAKE_BUILD_TYPE STREQUAL "Debug")
     add_compile_definitions(CFG_TUSB_DEBUG=1)
     add_compile_definitions(OGXM_DEBUG=1)
     add_compile_definitions(CONFIG_OGXM_DEBUG=1)
+
+    if(OGXM_SWITCH2_HID_RAW_LOG)
+        target_compile_definitions(${FW_NAME} PRIVATE OGXM_SWITCH2_HID_RAW_LOG=1)
+        message(STATUS "OGXM_SWITCH2_HID_RAW_LOG: UART hex when Switch 2 Pro 3 digital button bytes change")
+    endif()
 
     target_compile_options(${FW_NAME} PRIVATE
         -Wall                # Enable most warnings

@@ -130,11 +130,6 @@
 
 #endif
 
-#if defined(CONFIG_OGXM_DEBUG)
-    //Pins and port are defined in CMakeLists.txt
-    #define DEBUG_UART_PORT __CONCAT(uart,PICO_DEFAULT_UART)
-#endif // defined(CONFIG_OGXM_DEBUG)
-
 #if defined(I2C_SDA_PIN)
     #define I2C_BAUDRATE 400 * 1000
     #define I2C_PORT    ((I2C_SDA_PIN == 2 ) || \

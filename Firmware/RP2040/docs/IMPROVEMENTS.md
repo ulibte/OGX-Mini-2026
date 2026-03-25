@@ -4,6 +4,13 @@ Improvements and fixes applied to the OGX-Mini RP2040 firmware in this project.
 
 **Version:** From **v1.0.0a3** the version was bumped to **v1.0.0a4** to reflect Wii U controller fixes, Gamecube USB mode, PS3 driver fixes, latency improvements, and Xbox 360 (XInput) support (see below). **v1.0.0.8a+** documents **Pico W / Pico 2 W** work on **DualShock 4 (Classic Bluetooth)** vs **BLE advertising**, **BR inquiry**, and related BT stability (see *Pico W / Pico 2 W — DualShock 4 and Classic Bluetooth* below).
 
+**Next version (e.g. v1.0.0.9a) — documented here for release notes:**
+
+- **Bluetooth (Pico W / Pico 2 W):** ~**1 second** haptic **connection rumble** when a wireless controller reaches **device ready** (so you can feel that pairing completed). **DualShock 4** uses a **longer start delay** before rumble (same idea as the existing PS4 FF grace window) so early force-feedback does not destabilize the link. **File:** `src/Bluepad32/Bluepad32.cpp` — `ogxm_play_connection_rumble()` from `device_ready_cb`.
+- **PS3 mode with the adapter plugged into a Windows PC:** **Host output rumble** forwarded to the Bluetooth pad no longer stays on at idle. Windows DInput often sends a **small non-zero** large-motor byte or a **small-motor byte other than 0/1**; the driver now applies a **deadzone** on the large motor and treats the small motor as on **only when the byte is `1`** (DS3 output semantics). **File:** `src/USBDevice/DeviceDriver/PS3/PS3.cpp` — `new_report_out_` path.
+- **Pico W / Pico 2 W — PIO USB wired unplug:** **Reliable disconnect** when the gamepad cable is removed from the adapter’s PIO USB host port (see [§ Pico W / Pico 2 W — PIO USB wired controller unplug detection](#pico-w--pico-2-w--pio-usb-wired-controller-unplug-detection)). **Files:** `src/OGXMini/Board/PicoW.cpp`, `src/USBHost/HostManager.h`.
+- **DualShock 3 — automatic Bluetooth pairing over USB (boards with Bluetooth):** When a **PS3 / DualShock 3** controller is used **wired** on the USB host, after the normal USB HID init the firmware sends **HID feature report `0xF5`** with the adapter’s **local BD_ADDR** (same as [Bluepad32’s sixaxispairer](https://bluepad32.readthedocs.io/en/latest/pair_ds3/)), so the user can **unplug USB** and connect with **PS**. If `uni_local_bd_addr` is not ready yet, pairing is **deferred** until the first reports where the address is valid. **File:** `src/USBHost/HostDriver/PS3/PS3.cpp` (guarded by `CONFIG_EN_BLUETOOTH`).
+
 ---
 
 ## Xbox 360 (XInput) support
@@ -82,6 +89,11 @@ Descriptors and XSM3 flow are aligned with [joypad-os](https://github.com/joypad
    - The configuration descriptor now advertises **remote wakeup** (`bmAttributes` 0xA0) so the PS3 can suspend the USB bus in standby and the adapter can signal wake. When the console is in standby (turned off via **PS button → Turn off system** or similar, not full power loss), you can wake it by **pressing PS (Home)** or **holding Start for 3 seconds**—**only if the console keeps USB power when off**.
    - **Many PS3s cut power to the USB ports** when shut down, so the adapter and controller disconnect and wake is not possible. If your controller stays powered (e.g. charging LED) when the PS3 is off, that model may keep USB in standby and wake may work. Same disclaimer as 360: no wake from cold start; use the console power button first if needed.
    - **Recovery Mode:** Even when wake from standby is not possible (e.g. console cuts USB when off), the adapter is **confirmed working in PS3 Recovery Mode** — you can use it to navigate and select options in Recovery.
+
+7. **Host rumble → Bluetooth pad (PS3 mode on PC)** *(next version)*  
+   When the adapter is in **PS3 output mode** and connected to a **Windows** host, the OS still sends **HID output** (rumble) to the device. That output is forwarded to the **Bluetooth** gamepad as `PadOut` rumble. Some Windows stacks leave **noise** in the report (small large-motor values, or non‑`0`/`1` small-motor bytes). Forwarding that blindly caused **constant vibration** on the wireless controller at idle.  
+   **Fix:** Ignore large-motor values **below a small threshold** (deadzone), and treat the **small motor as on only when the host byte is `1`** (not “any non-zero”).  
+   **File:** `PS3.cpp` — block that runs when `new_report_out_` is set after `set_report_cb` parses the DS3 output report.
 
 ---
 
@@ -213,6 +225,34 @@ Some 8BitDo wired XInput controllers (VID 0x2DC8, PID 0x3016 or 0x3106) can disc
 
 ---
 
+## Pico W / Pico 2 W — PIO USB wired controller unplug detection
+
+**Problem:** On **Pico W / Pico 2 W**, the **USB gamepad** plugs into a **PIO USB** host. While PIO owns **D+ / D−**, reading line state with **`gpio_get()`** (as in **`pio_usb_bus_get_line_state()`** / **`hcd_port_connect_status()`**) often **does not** show a clean **SE0** after you pull the cable — lines can **float** or sit in a state that still looks like full-speed idle. The firmware could keep thinking the port was **connected**, so **TinyUSB** stayed up, **HostManager** still had a slot, and **Bluetooth** stayed blocked (wired takeover) until a power-cycle or “shorting” the port.
+
+**Approach:** In **`pico_w_pio_usb_bt_mux_tick()`** (`src/OGXMini/Board/PicoW.cpp`), treat **unplug** when **`HostManager::any_mounted()`** is still true **and** **any** of these **hints** fires (all share one **debounce**, ~**60 ms** wall time):
+
+1. **`!hcd_port_connect_status(BOARD_TUH_RHPORT)`** — line-based disconnect when the HCD stack *does* see disconnect.
+2. **No configured TinyUSB device** — loop device addresses **`1 … CFG_TUH_DEVICE_MAX + CFG_TUH_HUB`** (matches TinyUSB’s internal **`TOTAL_DEVICES`**) and require **`tuh_mounted(d)`** for at least one address. If the stack has dropped configuration, tear down even if the line hint lied.
+3. **No USB host input for several seconds** — **`HostManager::usb_host_input_idle_ms()`** (default threshold **3000 ms** in `PicoW.cpp`) — after unplug, **IN transfers** and **`process_report()`** usually stop even if (1) and (2) lag. **`record_usb_host_input_activity()`** is called from **`process_report()`** and after successful **`setup_driver()`** (`src/USBHost/HostManager.h`). **`HostManager::initialize()`** seeds **`last_usb_host_input_ms_`** from **`board_api::ms_since_boot()`** so idle time is not huge before the first device.
+
+After debounced confirmation, **`pico_w_usb_host_full_stop()`** runs **`tuh_deinit`**, stops the SOF timer, clears unplug debounce state, and **`board_api_usbh::enable_host_line_irq_monitoring()`** so normal **GPIO unplug/plug** IRQs work again; **Bluetooth** release paths run as before.
+
+**Tuning:** If unplug feels slow, lower **`USB_UNPLUG_NO_INPUT_MS`** in `PicoW.cpp`. If a controller that **rarely sends reports** when idle ever mis-triggers unplug, raise that constant slightly.
+
+---
+
+## DualShock 3 — automatic USB programming for Bluetooth pairing
+
+**Background:** The **DualShock 3** does not implement standard Bluetooth pairing. The host’s **BD_ADDR** must be written to the pad over **USB** using a **HID feature report** (report ID **`0xF5`**, 8 bytes: id + padding + 6-byte MAC). This is what the [Bluepad32 sixaxispairer](https://bluepad32.readthedocs.io/en/latest/pair_ds3/) utility does from a PC.
+
+**Behavior in this firmware:** On builds with **`CONFIG_EN_BLUETOOTH`** (e.g. **Pico W / Pico 2 W**, ESP32 hybrids with Bluepad32), after the existing **PS3 USB init** (`GET_REPORT` **0xF2** sequence) completes, **`PS3Host`** sends **`SET_REPORT`** **feature 0xF5** with **`uni_bt_get_local_bd_addr_safe()`**, then continues with the usual rumble **OUT** report. If the local address is still **all zeros** (Bluetooth stack not finished starting), the code sets a **deferred** flag and **`try_deferred_ds3_bt_pair()`** runs at the start of **`process_report()`** until the address is valid, then sends **0xF5** once.
+
+**User steps:** Plug the **DS3 into the adapter’s USB host port** (wait for it to work wired if you like), then **unplug** and press **PS** to use it wirelessly — same as the manual pairing flow documented for Bluepad32.
+
+**Files:** `src/USBHost/HostDriver/PS3/PS3.cpp`, `PS3.h`.
+
+---
+
 ## Pico W / Pico 2 W — DualShock 4 and Classic Bluetooth (BR/EDR) stability
 
 **Context:** On **CYW43439** (Pico W / Pico 2 W), **BLE** and **Classic Bluetooth (BR/EDR)** share one radio. **DualShock 4** uses **Classic ACL** only. **DualSense**, **Xbox Series (BLE)**, and **Switch Pro** (typical pairing) use **LE** — so DS4 was uniquely sensitive to how the stack used the radio at the same time as other activity.
@@ -256,6 +296,12 @@ For **`CONTROLLER_TYPE_PS4Controller`**, **rumble output** is **delayed ~6 secon
 - **Reconnect:** last device disconnect calls **`uni_bt_enable_new_connections_unsafe(true)`** so pairing can resume without power-cycling.
 - **8 s input-stall disconnect** (non-virtual, non-BLE-Xbox) to clear zombie links; **BLE Xbox** uses keepalive instead of stall disconnect.
 
+### 6. Connection rumble when the wireless controller is ready *(next version)*
+
+When Bluepad32 reports **`device_ready`** for a non-virtual gamepad, the firmware plays about **one second** of **dual-motor rumble** (via `play_dual_rumble` when the controller supports it) so you can **feel** that the Bluetooth link is up. **DualShock 4** uses a **~1.2 s delay** before starting that rumble so it does not overlap the fragile post-connect window (aligned with the existing PS4 rumble grace logic). Other controller types use a shorter default delay.
+
+**File:** `src/Bluepad32/Bluepad32.cpp` — `ogxm_play_connection_rumble()`, called from `device_ready_cb`.
+
 ---
 
 ## Switch Pro — analog stick sensitivity
@@ -284,11 +330,13 @@ The script checks for required tools (git, python3, cmake, ninja, arm-none-eabi-
 | Area | Improvement |
 |------|-------------|
 | **XInput (360)** | XSM3 authentication and descriptors aligned with joypad-os; adapter works on Xbox 360 with BT controllers (PS5, Xbox One). 8BitDo wired fix: LED keepalive for VID 0x2DC8 / PID 0x3016 or 0x3106. Report built every loop, send when endpoint ready — same minimal-latency pattern as Switch/PS3. |
-| **PS3** | Stuck inputs and delays addressed via L2/R2 axes; DS3-accurate sticks (0–255, center 0x80, ~1.5% deadzone); D-pad and face button mapping; Home (PS) button with 8-frame latch for BT controllers. |
+| **PS3** | Stuck inputs and delays addressed via L2/R2 axes; DS3-accurate sticks (0–255, center 0x80, ~1.5% deadzone); D-pad and face button mapping; Home (PS) button with 8-frame latch for BT controllers. **Next version:** PC host rumble deadzone + strict small-motor `0`/`1` so idle rumble does not stick on the BT pad. |
 | **PS2 (GPIO)** | Home only = IGR (L1+L2+R1+R2+Start+Select); Home+Start = shutdown (L1+L2+R1+R2+L3+R3). OPL and protocol stability (first response byte = mode byte). |
 | **OG Xbox** | Guide only = IGR. Shutdown = LT+RT+Back+White via **Guide+Start** or **Guide+View (Back)**; Xbox BT often omits Start while Guide is held. Shutdown report strips Start so the chord matches BIOS/softmod expectations. |
 | **Switch Pro** | Analog stick sensitivity gain (default 1.2×) for more responsive sticks; configurable in `Switch.cpp`. |
 | **Boards** | RP2350_ZERO, RP2040_XIAO, RP2354 supported (Standard/PIO-USB host path). |
 | **Latency** | Main loop delay default **0 µs**; `tud_task()` before `process()` so reports send every loop when ready; XInput/Switch/PS3 send latest state when USB ready (no `new_pad_in()` gate). Switch Pro and PS3 always build report every loop so host poll (`get_report`) and IN push both see current state — only remaining delay is BT radio when wireless. |
 | **Build** | Interactive scripts `scripts/build.sh` (Linux/macOS) and `scripts/build.ps1` (Windows) for board selection, fixed/default mode, and Release/Debug; output in `scripts/build/`. See [README](../../../README.md) Build section. |
-| **Bluetooth (Pico W)** | **DS4 / Classic ACL:** BLE advertising **paused** while Classic pad connected; **BR inquiry stopped** during ACL; **no DS4 virtual mouse**; **6 s PS4 rumble** grace. **Xbox Series (BLE):** no stall disconnect when idle; keepalive 12 s; stale-slot delete on reconnect. **General:** `sleep_ms(1)` main loop; lock-free BT pad-in; re-enable scan on last disconnect. |
+| **Bluetooth (Pico W)** | **DS4 / Classic ACL:** BLE advertising **paused** while Classic pad connected; **BR inquiry stopped** during ACL; **no DS4 virtual mouse**; **6 s PS4 rumble** grace. **Xbox Series (BLE):** no stall disconnect when idle; keepalive 12 s; stale-slot delete on reconnect. **General:** `sleep_ms(1)` main loop; lock-free BT pad-in; re-enable scan on last disconnect. **Next version:** ~**1 s connection rumble** at `device_ready` (DS4 delayed start). |
+| **PIO USB host (Pico W)** | **Wired unplug:** Debounced combo of **HCD connect**, **`tuh_mounted` over all device addresses**, and **no `process_report` / setup activity** (~**3 s**) so disconnect registers when D+/D− line state is wrong under PIO; **`tuh_deinit`** + restore GPIO line IRQs + BT release. See [§ Pico W — PIO USB wired controller unplug detection](#pico-w--pico-2-w--pio-usb-wired-controller-unplug-detection). |
+| **DS3 + Bluetooth** | **USB auto-pair:** After PS3 wired init, **feature `0xF5`** programs the **DS3** with the adapter’s **BD_ADDR** (`CONFIG_EN_BLUETOOTH`); deferred if BT address not ready. See [§ DualShock 3 — automatic USB programming for Bluetooth pairing](#dualshock-3--automatic-usb-programming-for-bluetooth-pairing). |

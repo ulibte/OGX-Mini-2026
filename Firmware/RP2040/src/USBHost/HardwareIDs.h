@@ -399,8 +399,16 @@ static const HardwareID SWITCH_PRO_IDS[] =
     {0x057E, 0x0330}, // Wii U Pro
     {0x057E, 0x2006}, // Joy-Con (L)
     {0x057E, 0x2007}, // Joy-Con (R)
-    {0x057E, 0x2069}, // Nintendo Switch 2 Pro Controller
+    {0x057E, 0x2067}, // Joy-Con 2 (L) — same USB bulk bring-up as Pro 2
+    {0x057E, 0x2066}, // Joy-Con 2 (R)
+    {0x057E, 0x2073}, // NSO GameCube Controller (Switch 2–family USB)
     // {0x20D6, 0xA711}, // OpenSteamController, emulated pro controller
+};
+
+// Switch 2 Pro only — uses Switch2ProHost (same InReport decode as SwitchProHost; see Wired_Controllers.md)
+static const HardwareID SWITCH_PRO_2_IDS[] =
+{
+    {0x057E, 0x2069}, // Nintendo Switch 2 Pro Controller
 };
 
 // Wired Switch controllers (from SDL_GameControllerDB + existing)
@@ -459,6 +467,7 @@ static const HostTypeMap HOST_TYPE_MAP[] =
     { PS5_IDS, sizeof(PS5_IDS) / sizeof(HardwareID), HostDriverType::PS5 },
     { PS3_IDS, sizeof(PS3_IDS) / sizeof(HardwareID), HostDriverType::PS3 },
     { SWITCH_WIRED_IDS, sizeof(SWITCH_WIRED_IDS) / sizeof(HardwareID), HostDriverType::SWITCH },
+    { SWITCH_PRO_2_IDS, sizeof(SWITCH_PRO_2_IDS) / sizeof(HardwareID), HostDriverType::SWITCH_PRO_2 },
     { SWITCH_PRO_IDS, sizeof(SWITCH_PRO_IDS) / sizeof(HardwareID), HostDriverType::SWITCH_PRO },
     { PSCLASSIC_IDS, sizeof(PSCLASSIC_IDS) / sizeof(HardwareID), HostDriverType::PSCLASSIC },
     { N64_IDS, sizeof(N64_IDS) / sizeof(HardwareID), HostDriverType::N64 },

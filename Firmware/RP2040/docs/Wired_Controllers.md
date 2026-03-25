@@ -59,6 +59,11 @@ This document lists controllers supported when connected to the OGX-Mini adapter
 
 *See `SWITCH_PRO_IDS` and `SWITCH_WIRED_IDS` in `HardwareIDs.h` for the full VID/PID list.*
 
+**Switch 2–family USB (Pro Controller 2, Joy‑Con 2, NSO GameCube, etc.):**  
+The firmware runs the same vendor **bulk OUT** bring‑up on **USB configuration 1, interface 1** as the PC capture tool (`Tools/controller_capture/switch2_usb_init.py` / HandHeldLegend ProCon 2 enabler), then continues with the normal Switch Pro **HID** init (handshake, full report mode, etc.). Wired input reports may use report ID **0x09** (with a 1‑byte counter after the ID).
+
+**Switch 2 Pro (PID 0x2069), wired USB only:** After the same **bulk OUT** bring‑up on **config 1 / interface 1**, **Switch2ProHost** parses the standard **64‑byte** HID report (ID **0x09**, 1‑byte counter, then **10‑byte** `SwitchPro::InReport` payload). Digitals use **Switch‑2‑specific** bit positions (not classic **Buttons0/1/2**): face **B/A/Y/X**, **RB**, **LB** (Home bit), **Minus** → Back, **Plus** / d‑pad directions, **L3**, **Start** (classic R), **R3** (classic ZR bit), **SYS** (classic `bl` d‑pad up), **ZL/ZR** → **LT/RT** (digital full press from captured bits), and **Capture** is still not mapped to **MISC**. **GL**, **GR**, and **Chat** are **documented in source** (`Switch2ProHost.cpp`) but **left unmapped**. Extended report bytes are not used for decoding (avoids IMU coupling / flicker). **Bluetooth** for this model is **not** covered here—use a **wired** connection to the adapter’s USB host port. Other Switch 2–family PIDs keep **SwitchProHost**.
+
 ---
 
 ### PlayStation Classic

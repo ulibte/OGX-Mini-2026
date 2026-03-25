@@ -18,6 +18,10 @@ Firmware/external/pico-sdk
 Firmware/external/picotool
 Tools/dvd-dongle-rom.bin
 
+# Python
+**/__pycache__/
+*.py[cod]
+
 # Local docs (not for GitHub)
 Firmware/RP2040/docs/XInput_joypad-os_comparison.md
 Firmware/RP2040/docs/BLUEPAD32_PS4_PS5_PARSING.md

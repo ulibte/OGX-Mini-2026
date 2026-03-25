@@ -108,6 +108,16 @@ Write-Host "  2) Debug (UART logging, no optimization)"
 $configChoice = Read-Host "Choice [1-2]"
 $CMAKE_BUILD_TYPE = if ($configChoice -eq "2") { "Debug" } else { "Release" }
 
+$OGXM_SWITCH2_HID_RAW_LOG = $false
+if ($configChoice -eq "2") {
+    Write-Host ""
+    Write-Host "Switch 2 Pro USB (PID 0x2069) debugging (Debug builds only):"
+    Write-Host "  1) Off (default)"
+    Write-Host "  2) UART: raw HID hex when report buffer changes (-DOGXM_SWITCH2_HID_RAW_LOG=ON)"
+    $s2RawChoice = Read-Host "Choice [1-2]"
+    if ($s2RawChoice -eq "2") { $OGXM_SWITCH2_HID_RAW_LOG = $true }
+}
+
 # --- Run build ---
 $BuildDir = Join-Path $ScriptDir "build"
 if (Test-Path $BuildDir) { Remove-Item -Recurse -Force $BuildDir }
@@ -115,7 +125,8 @@ New-Item -ItemType Directory -Path $BuildDir | Out-Null
 
 Write-Host ""
 $fixedInfo = if ($OGXM_FIXED_DRIVER) { " fixed=$OGXM_FIXED_DRIVER" } else { "" }
-Write-Host "Building: board=$OGXM_BOARD type=$CMAKE_BUILD_TYPE$fixedInfo"
+$s2Info = if ($OGXM_SWITCH2_HID_RAW_LOG) { " switch2_raw_hid=ON" } else { "" }
+Write-Host "Building: board=$OGXM_BOARD type=$CMAKE_BUILD_TYPE$fixedInfo$s2Info"
 Write-Host "Output directory: $BuildDir"
 Write-Host ""
 
@@ -127,6 +138,9 @@ $cmakeArgs = @(
 if ($OGXM_FIXED_DRIVER) {
     $cmakeArgs += "-DOGXM_FIXED_DRIVER=$OGXM_FIXED_DRIVER"
     $cmakeArgs += "-DOGXM_FIXED_DRIVER_ALLOW_COMBOS=OFF"
+}
+if ($OGXM_SWITCH2_HID_RAW_LOG) {
+    $cmakeArgs += "-DOGXM_SWITCH2_HID_RAW_LOG=ON"
 }
 
 $buildLog = Join-Path $env:TEMP "ogxm_build_log.txt"
@@ -145,6 +159,16 @@ try {
 if ($buildSuccess) {
     Write-Host ""
     Write-Host "Build completed successfully. Output is in: $BuildDir" -ForegroundColor Green
+    if ($CMAKE_BUILD_TYPE -eq "Debug") {
+        Write-Host ""
+        Write-Host "Debug logging (OGXM_LOG, Switch 2 raw HID): UART only at 115200 8N1 — not the Pico USB cable." -ForegroundColor Yellow
+        if ($OGXM_BOARD -eq "PI_PICOW" -or $OGXM_BOARD -eq "PI_PICO2W") {
+            Write-Host "  Wire USB-serial RX to GP4 (board TX), GND to GND."
+        } else {
+            Write-Host "  Wire USB-serial RX to GP0 (board TX), GND to GND."
+        }
+        Write-Host "  Then open that COM port in PuTTY / VS Code Serial Monitor at 115200."
+    }
 } else {
     Write-Host ""
     Write-Host "Build failed. You can save the output to a log file for troubleshooting." -ForegroundColor Yellow

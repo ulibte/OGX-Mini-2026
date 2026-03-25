@@ -75,7 +75,18 @@ Example (from `Firmware/RP2040`):
 
 ---
 
-## 6. Debug / UART logging (crash debugging)
+## 6. External USB in other output modes (Pico W / Pico 2 W)
+
+For firmware built for **Pico W / Pico 2 W** with **USB host** enabled but **not** Wii-only (e.g. combo builds, Xbox/Switch/PS output over Bluetooth or USB device), the **same external PIO USB port** (D+/D− on GP0/GP1 per §3) can host a **wired gamepad**. Input is merged with the normal gamepad path and appears on the chosen output.
+
+- **Mutual exclusion with Bluetooth:** If **any** Bluetooth gamepad is already connected, the firmware does **not** bring up PIO USB host for that tick; wired devices on the external port are **ignored** until **all** Bluetooth gamepads disconnect. Conversely, when a wired controller **enumerates** on the external port, **all** Bluetooth gamepads are disconnected and **new** Bluetooth connections are disabled until that wired device is **unplugged** (then Bluetooth pairing/connect is allowed again).
+- **No external port required:** If you do **not** wire the external connector, the firmware **debounces** D+/D− activity before starting the host; builds behave like **Bluetooth-only** adapters with no dependency on the port being present.
+
+**Wii-only builds** (`-DOGXM_FIXED_DRIVER=WII`) still use the dedicated Wii USB host path on Core 1 as before; this section applies to **non-Wii** Pico W / Pico 2 W builds that include `CONFIG_EN_USB_HOST`.
+
+---
+
+## 7. Debug / UART logging (crash debugging)
 
 To see where the firmware gets to when switching to Wii mode (or if it crashes), build in **Debug** so that **UART logging** is enabled. Logs go to **UART1** on **GP4 (TX)** and **GP5 (RX)** so they do not conflict with PIO USB on GP0/GP1. (GP10/11 are not valid UART pins on RP2040/RP2350.)
 
@@ -85,14 +96,14 @@ To see where the firmware gets to when switching to Wii mode (or if it crashes),
 
 ---
 
-## 7. Troubleshooting
+## 8. Troubleshooting
 
 | Symptom | Likely cause | What to do |
 |--------|----------------|------------|
 | Controller vibrates, no LED, doesn’t sync | Host using native USB instead of PIO USB | Ensure Wii mode uses PIO USB (roothub 1) as in §2. |
 | Same | D+ and D− swapped on cable | Set `PIO_USB_SWAP_DP_DM 1` in config and rebuild, or swap D+ and D− wires. |
 | No response at all | Wrong port or no VBUS | Use the **external** USB (PIO USB) and ensure VBUS has 5 V. |
-| Crash when switching to Wii | Debug with UART (GP4/5) | Build Debug, connect UART to GP4/5 @ 115200; see §6. |
+| Crash when switching to Wii | Debug with UART (GP4/5) | Build Debug, connect UART to GP4/5 @ 115200; see §7. |
 
 ---
 

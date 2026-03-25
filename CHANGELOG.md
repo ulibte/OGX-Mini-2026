@@ -4,6 +4,16 @@ Features and fixes added in this fork. For the latest firmware improvements (PS3
 
 ---
 
+### Version 1.0.0.9a *(planned / next release)*
+
+- **Nintendo Switch 2 Pro (USB PID 0x2069), wired** — **Switch2ProHost** now maps **face buttons, d‑pad, LB/RB, L3, R3, Start, Guide/SYS, Minus (Back), ZL/ZR as LT/RT** from the stable **10‑byte** input payload after report **0x09** (extended / IMU bytes unused to avoid flicker). **GL**, **GR**, and **Chat** are documented in code but intentionally unmapped. **Wired USB to the adapter only** (see [Wired_Controllers.md](Firmware/RP2040/docs/Wired_Controllers.md)). Debug: optional **`OGXM_SWITCH2_HID_RAW_LOG`** logs when the **three digital button bytes** change (UART).
+- **Bluetooth (Pico W / Pico 2 W)** — **~1 second connection rumble** when a wireless controller reaches **device ready**, so you get haptic feedback that pairing completed. **DualShock 4** uses a **delayed start** before rumble (same spirit as the existing PS4 FF grace period). See [IMPROVEMENTS.md](Firmware/RP2040/docs/IMPROVEMENTS.md) (*Next version* and *§6. Connection rumble*).
+- **PS3 mode on Windows PC** — **Host rumble** forwarded to the Bluetooth pad no longer **sticks on at idle**: deadzone on the **large motor** byte and **small motor on only when the host sends `1`** (DS3 semantics). See [IMPROVEMENTS.md](Firmware/RP2040/docs/IMPROVEMENTS.md) (*PS3 mode* item 7).
+- **Pico W / Pico 2 W — PIO USB wired unplug** — Unplugging the gamepad from the adapter’s **USB host** port is detected reliably: **PIO-owned D+/D−** often never looks “disconnected” to GPIO/HCD alone. Firmware now uses **debounced** **HCD port status**, **no `tuh_mounted` device** (all TinyUSB address slots), and a **no-input** watchdog (**~3 s** without `process_report` / setup activity) before **`tuh_deinit`** and restoring **GPIO line IRQ** monitoring so **Bluetooth** can resume without power-cycling. See [IMPROVEMENTS.md](Firmware/RP2040/docs/IMPROVEMENTS.md) (*Pico W / Pico 2 W — PIO USB wired controller unplug detection*).
+- **DualShock 3 — USB Bluetooth pairing on adapters with BT** — Plugging a **DS3** into the **USB host** port automatically sends **HID feature report `0xF5`** with this device’s **Bluetooth address** (same idea as [Bluepad32 sixaxispairer](https://bluepad32.readthedocs.io/en/latest/pair_ds3/)), so you can **unplug** and press **PS** to use the pad wirelessly. If the stack has not published the local BD_ADDR yet, pairing runs on a later report. See [IMPROVEMENTS.md](Firmware/RP2040/docs/IMPROVEMENTS.md) (*DualShock 3 — automatic USB programming for Bluetooth pairing*).
+
+---
+
 ### Version 1.0.0.8a
 
 - **PS4 (DualShock 4) over Bluetooth (Pico W)** — **OGX-Mini BLE advertising** (phone setup app) runs continuously on the same **CYW43439** radio as **Classic BR/EDR** (DS4). That mix commonly **drops the DS4 link** right after the blue LED. **Fix:** **`gap_advertisements_enable(0)`** before DS4 HID setup and whenever any **ACL** gamepad is ready; **re-enable** when the last Classic pad disconnects (BLE-only pads e.g. DualSense unchanged). Still: **BR inquiry off** during ACL, **no DS4 virtual mouse**, **6 s** PS4 rumble grace. **Docs:** [README](README.md) (Wireless Bluetooth), [IMPROVEMENTS.md](Firmware/RP2040/docs/IMPROVEMENTS.md) (*Pico W / Pico 2 W — DualShock 4 and Classic Bluetooth*).
