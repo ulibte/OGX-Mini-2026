@@ -91,10 +91,8 @@ See [**Wired Controllers**](Firmware/RP2040/docs/Wired_Controllers.md) for a ful
 
 Note: There are some third party controllers that can change their VID/PID, these might not work correctly.
 
-**Requesting support for a new controller:** run the capture tool in **[Tools/controller_capture](Tools/controller_capture/README.md)** on your PC, save the report, and attach it when you ask for a new **VID/PID** or mapping.
-
 ### Wireless adapters
-- Xbox 360 PC adapter (Microsoft or clones)
+- Xbox 360 PC adapter (Microsoft)
 - 8Bitdo v1 and v2 Bluetooth adapters (set to XInput mode)
 - Most wireless adapters that present themselves as Switch/XInput/PlayStation controllers should work
 
@@ -156,11 +154,17 @@ Highlights:
 - Output to the following consoles:
       - ~~PS2~~ (done: PS1/PS2 GPIO mode, see changelog)
       - ~~GameCube~~ (done: GameCube GPIO mode, see changelog)
-      - DreamCast
+      - ~~DreamCast~~
       - NES
       - SNES
       - Genesis
       - Master System
+      - Sega Saturn
+      - PS4/ PS5
+      - Xbox One
+      - Atari
+      - PS2 MultiTap
+      - PS1 MultiTap
 
 ## Hardware
 For Pi Pico, RP2040-Zero, 4 channel, and ESP32 configurations, please see the hardware folder for diagrams.
@@ -214,11 +218,15 @@ Build with **CMake** from the `Firmware/RP2040` directory (or use the build scri
 
 #### Board options (OGXM_BOARD)
 
+Please Note that I currently only have Pico W/ 2 W, Waveshare RP2350 USB A and AdaFruit Feather. I am unable to test on other boards at this time, if you wish for more boards to be tested and compatible with my build please consider a donation on KoFi. There may be unexpected bugs on other boards that I am unable to test directly until the board is made available to me. 
+
+Additionally, clone boards or knock offs are not supported. I cannot source and test everything on every variation of clone boards as their builds may effect other official boards as well and break other features. If you wish for your clone board to be supported you will need to edit and compile the firmware yourself.
+
 Use one of these values for **`OGXM_BOARD`** in a manual build, or pick the same board from the build script’s numbered list:
 
 - ```PI_PICO``` 
 - ```PI_PICO2``` 
-- ```PI_PICOW``` 
+- ```PI_PICOW```  
 - ```PI_PICO2W``` 
 - ```RP2040_ZERO``` (Waveshare RP2040-Zero)
 - ```RP2350_USB_A``` (Waveshare RP2350-USB-A)
