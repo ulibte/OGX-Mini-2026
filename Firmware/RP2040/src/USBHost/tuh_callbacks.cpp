@@ -1,4 +1,5 @@
 #include <cstdint>
+#include "pico/time.h"
 
 #include "tusb.h"
 #include "host/usbh.h"
@@ -7,6 +8,10 @@
 #include "USBHost/HostDriver/XInput/tuh_xinput/tuh_xinput.h"
 #include "USBHost/HostManager.h"
 #include "OGXMini/OGXMini.h"
+#include "pico/bootrom.h"
+
+// Gamesir dongle bug
+static bool have_to_wait_for_xinput = true;
 
 usbh_class_driver_t const* usbh_app_driver_get_cb(uint8_t* driver_count) {
     *driver_count = 1;
@@ -28,6 +33,30 @@ void tuh_hid_mount_cb(uint8_t dev_addr, uint8_t instance, uint8_t const* desc_re
     OGXM_LOG("Raw HID Descriptor (HEX):\n");
     OGXM_LOG_HEX(desc_report, desc_len);
     OGXM_LOG("\n");
+
+    // Hack para forçar fallback de Switch Pro (HID) para Xbox 360 (XInput) no dongle do gamesir t4 pro
+    if (vid == 0x057E && pid == 0x2009) {
+        if (have_to_wait_for_xinput) {
+            // O gamesir t4 pro só finge ser xbox 360 se demorar para o setup.
+            // valores testatos que não foram suficiente no modo debug: 20, 40, 80
+            // 160 funcionou no debug, mas nao no release.
+            // não funcionou no release: 160, 320, 480, 520
+            // 2000, 1320, 980, 810  funcionou.
+            // 540, 560, 580, 600, 640 funcionou uma vez
+            // 800 sem sleep no reset não funcionou
+            // 820 sem sleep no reset funciou
+            sleep_ms(900);
+            have_to_wait_for_xinput = false;
+            uint8_t rhport = usbh_get_rhport(dev_addr);
+            tuh_rhport_reset_bus(rhport, true);
+            //sleep_ms(20);
+            tuh_rhport_reset_bus(rhport, false);
+            return; 
+        }
+        // resetar o rp2040 para testes
+        //reset_usb_boot(0, 0);
+    }
+    have_to_wait_for_xinput=true;
 
     HostManager& host_manager = HostManager::get_instance();
 

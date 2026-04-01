@@ -330,7 +330,7 @@ if(CMAKE_BUILD_TYPE STREQUAL "Debug")
         PICO_DEFAULT_UART_RX_PIN=${RX_PIN}
     )
  
-    add_compile_definitions(CFG_TUSB_DEBUG=3)
+    add_compile_definitions(CFG_TUSB_DEBUG=3) # debug do tinyusb
     add_compile_definitions(OGXM_DEBUG=1)
     # define the CONFIG_OGXM_DEBUG used by headers so ogxm_log.cpp is compiled
     add_compile_definitions(CONFIG_OGXM_DEBUG=1)
