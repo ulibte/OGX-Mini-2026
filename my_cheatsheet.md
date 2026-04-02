@@ -10,6 +10,17 @@ cmake -S . -B build -G Ninja \
   -DMAX_GAMEPADS=1
 cmake --build build
 ```
+```bash
+cd Firmware/RP2040
+
+rm -rf build
+cmake -S . -B build -G Ninja \
+  -DCMAKE_BUILD_TYPE=Release \
+  -DOGXM_BOARD=PI_PICO \
+  -DMAX_GAMEPADS=1
+cmake --build build
+```
+
 # atalho do vscode para compilar mais rapido: ctrl + shift + b
 # mas precisa do arquivo tasks.json na pasta .vscode, contendo algo parecido com isso:
 {

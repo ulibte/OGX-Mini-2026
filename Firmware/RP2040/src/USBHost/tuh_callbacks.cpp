@@ -45,7 +45,8 @@ void tuh_hid_mount_cb(uint8_t dev_addr, uint8_t instance, uint8_t const* desc_re
             // 540, 560, 580, 600, 640 funcionou uma vez
             // 800 sem sleep no reset não funcionou
             // 820 sem sleep no reset funciou
-            sleep_ms(900);
+            // 900 as vezes continua switch pro, e as vezes nao funciona
+            sleep_ms(1000);
             have_to_wait_for_xinput = false;
             uint8_t rhport = usbh_get_rhport(dev_addr);
             tuh_rhport_reset_bus(rhport, true);
