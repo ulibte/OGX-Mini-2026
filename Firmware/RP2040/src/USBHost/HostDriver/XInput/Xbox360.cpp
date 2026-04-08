@@ -1,6 +1,7 @@
 #include <cstring>
 
 #include "host/usbh.h"
+#include "TaskQueue/TaskQueue.h"
 
 #include "USBHost/HostDriver/XInput/tuh_xinput/tuh_xinput.h"
 #include "USBHost/HostDriver/XInput/Xbox360.h"
@@ -8,6 +9,19 @@
 void Xbox360Host::initialize(Gamepad& gamepad, uint8_t address, uint8_t instance, const uint8_t* report_desc, uint16_t desc_len)
 {
     tuh_xinput::set_led(address, instance, idx_ + 1, true);
+
+    uint16_t vid, pid;
+    tuh_vid_pid_get(address, &vid, &pid);
+    bool is_8bitdo = (vid == 0x2DC8) && (pid == 0x3016 || pid == 0x3106);
+
+    if (is_8bitdo)
+    {
+        tid_keepalive_ = TaskQueue::Core1::get_new_task_id();
+        TaskQueue::Core1::queue_delayed_task(tid_keepalive_, 1000, true, [address, instance, this] {
+            tuh_xinput::set_led(address, instance, idx_ + 1, false);
+        });
+    }
+
     tuh_xinput::receive_report(address, instance);
 }
 

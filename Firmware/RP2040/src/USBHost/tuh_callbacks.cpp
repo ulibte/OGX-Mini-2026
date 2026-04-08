@@ -61,9 +61,10 @@ void tuh_hid_mount_cb(uint8_t dev_addr, uint8_t instance, uint8_t const* desc_re
 
     HostManager& host_manager = HostManager::get_instance();
 
-    if (host_manager.setup_driver(HostManager::get_type({ vid, pid }), dev_addr, instance, desc_report, desc_len)) {
-        OGXM_LOG("✅ Driver setup SUCCESS!\n");
+    if (host_manager.setup_driver(HostManager::get_type({ vid, pid }), HostManager::DriverClass::HID,
+            dev_addr, instance, desc_report, desc_len)) {
         OGXMini::host_mounted(true);
+        OGXM_LOG("✅ Driver setup SUCCESS!\n");
     } else {
         OGXM_LOG("❌ Driver setup FAILED!\n");
     }
@@ -79,7 +80,7 @@ void tuh_hid_umount_cb(uint8_t dev_addr, uint8_t instance) {
 }
 
 void tuh_hid_report_received_cb(uint8_t dev_addr, uint8_t instance, uint8_t const* report, uint16_t len) {
-    HostManager::get_instance().process_report(dev_addr, instance, report, len);
+    HostManager::get_instance().process_report(HostManager::DriverClass::HID, dev_addr, instance, report, len);
 }
 
 //XINPUT
@@ -88,7 +89,7 @@ void tuh_xinput::mount_cb(uint8_t dev_addr, uint8_t instance, const tuh_xinput::
     HostManager& host_manager = HostManager::get_instance();
     HostDriverType host_type = HostManager::get_type(interface->dev_type);
 
-    if (host_manager.setup_driver(host_type, dev_addr, instance)) {
+    if (host_manager.setup_driver(host_type, HostManager::DriverClass::XINPUT, dev_addr, instance)) {
         OGXMini::host_mounted(true, host_type);
     }
 }
@@ -103,19 +104,19 @@ void tuh_xinput::unmount_cb(uint8_t dev_addr, uint8_t instance, const tuh_xinput
 }
 
 void tuh_xinput::report_received_cb(uint8_t dev_addr, uint8_t instance, const uint8_t* report, uint16_t len) {
-    HostManager::get_instance().process_report(dev_addr, instance, report, len);
+    HostManager::get_instance().process_report(HostManager::DriverClass::XINPUT, dev_addr, instance, report, len);
 }
 
 void tuh_xinput::xbox360w_connect_cb(uint8_t dev_addr, uint8_t instance) {
     uint8_t idx = HostManager::get_instance().get_gamepad_idx(  HostManager::DriverClass::XINPUT, 
                                                                 dev_addr, instance);
     OGXMini::wireless_connected(true, idx);
-    HostManager::get_instance().connect_cb(dev_addr, instance);
+    HostManager::get_instance().connect_cb(HostManager::DriverClass::XINPUT, dev_addr, instance);
 }
 
 void tuh_xinput::xbox360w_disconnect_cb(uint8_t dev_addr, uint8_t instance) {
     uint8_t idx = HostManager::get_instance().get_gamepad_idx(  HostManager::DriverClass::XINPUT, 
                                                                 dev_addr, instance);
     OGXMini::wireless_connected(false, idx);
-    HostManager::get_instance().disconnect_cb(dev_addr, instance);
+    HostManager::get_instance().disconnect_cb(HostManager::DriverClass::XINPUT, dev_addr, instance);
 }

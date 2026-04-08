@@ -8,6 +8,11 @@
 #include "USBHost/HostDriver/XInput/tuh_xinput/tuh_xinput.h"
 #include "USBHost/HostDriver/XInput/tuh_xinput/tuh_xinput_cmd.h"
 
+#include "Board/Config.h"
+#if defined(CONFIG_EN_USB_HOST)
+#include "pio_usb.h"
+#endif
+
 namespace tuh_xinput {
 
 static constexpr uint8_t MAX_INTERFACES = CFG_TUH_XINPUT * 2;
@@ -101,6 +106,9 @@ static void std_sleep_ms(uint32_t ms)
     while ( std::chrono::duration_cast<std::chrono::milliseconds>(
                 std::chrono::high_resolution_clock::now() - start).count() < ms) 
     {
+#if defined(CONFIG_EN_USB_HOST)
+        pio_usb_host_frame();
+#endif
         tuh_task();
     }
 }
@@ -109,6 +117,9 @@ static void wait_for_tx_complete(uint8_t dev_addr, uint8_t ep_addr)
 {
     while (usbh_edpt_busy(dev_addr, ep_addr))
     {
+#if defined(CONFIG_EN_USB_HOST)
+        pio_usb_host_frame();
+#endif
         tuh_task();
     }
 }
@@ -507,12 +518,18 @@ bool set_rumble(uint8_t dev_addr, uint8_t instance, uint8_t rumble_l, uint8_t ru
     switch (interface->dev_type)
     {
         case DevType::XBOX360W:
+            send_report(dev_addr, instance, Xbox360W::RUMBLE_ENABLE, sizeof(Xbox360W::RUMBLE_ENABLE));
+            wait_for_tx_complete(dev_addr, interface->ep_out);
+
             std::memcpy(buffer, Xbox360W::RUMBLE, sizeof(Xbox360W::RUMBLE));
             buffer[5] = rumble_l;
             buffer[6] = rumble_r;
             len = sizeof(Xbox360W::RUMBLE);
             break;
         case DevType::XBOX360:
+            send_report(dev_addr, instance, Xbox360::RUMBLE, sizeof(Xbox360::RUMBLE));
+            wait_for_tx_complete(dev_addr, interface->ep_out);
+
             std::memcpy(buffer, Xbox360::RUMBLE, sizeof(Xbox360::RUMBLE));
             buffer[3] = rumble_l;
             buffer[4] = rumble_r;

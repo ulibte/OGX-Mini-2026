@@ -1,6 +1,8 @@
 #ifndef TASK_QUEUE_H
 #define TASK_QUEUE_H
 
+#include <algorithm>
+#include <array>
 #include <cstdint>
 #include <functional>
 #include <memory>
@@ -47,7 +49,7 @@ public:
         }
     };
 
-#if (OGXM_BOARD != PI_PICOW) //BTstack uses core1
+#if (OGXM_BOARD != PI_PICOW) || defined(CONFIG_EN_USB_HOST)  // PI_PICOW: Core1 for Wii USB host
     struct Core1
     {
         static inline uint32_t get_new_task_id()
@@ -79,7 +81,7 @@ public:
             get_core1().resume_delayed();
         }
     }; // Core1
-#endif // OGXM_BOARD != PI_PICOW
+#endif
 
     static void suspend_delayed_tasks();
     static void resume_delayed_tasks();

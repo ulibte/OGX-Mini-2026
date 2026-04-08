@@ -21,8 +21,8 @@
 class Gamepad 
 {
 public:
+    
     //Defaults used by device to get buttons
-
     static constexpr uint8_t DPAD_UP         = 0x01;
     static constexpr uint8_t DPAD_DOWN       = 0x02;
     static constexpr uint8_t DPAD_LEFT       = 0x04;
@@ -143,16 +143,48 @@ public:
     inline bool new_pad_in() const { return new_pad_in_.load(); }
     inline bool new_pad_out() const { return new_pad_out_.load(); }
 
+    // True if current pad_out has non-zero rumble (read-only, does not clear new_pad_out).
+    inline bool has_rumble()
+    {
+        mutex_enter_blocking(&pad_out_mutex_);
+        bool r = (pad_out_.rumble_l > 0 || pad_out_.rumble_r > 0);
+        mutex_exit(&pad_out_mutex_);
+        return r;
+    }
+
     //True if both host and device have enabled analog
     inline bool analog_enabled() const { return analog_enabled_.load(std::memory_order_relaxed); }
 
     inline PadIn get_pad_in()
     {
         mutex_enter_blocking(&pad_in_mutex_);
-        PadIn pad_in = pad_in_;
-        new_pad_in_.store(false);
+        /* Bluetooth HID runs on Core1; never block there on this mutex (would stall HCI/L2CAP).
+         * Latest BT report is staged lock-free and merged here on Core0. */
+        if (bt_pad_staged_.exchange(false, std::memory_order_acq_rel)) {
+            const PadIn& p = bt_pending_pad_;
+            if (pad_in_count_ < PAD_IN_QUEUE_SIZE) {
+                pad_in_queue_[pad_in_tail_] = p;
+                pad_in_tail_ = (pad_in_tail_ + 1) % PAD_IN_QUEUE_SIZE;
+                pad_in_count_++;
+            } else {
+                pad_in_head_ = (pad_in_head_ + 1) % PAD_IN_QUEUE_SIZE;
+                pad_in_queue_[pad_in_tail_] = p;
+                pad_in_tail_ = (pad_in_tail_ + 1) % PAD_IN_QUEUE_SIZE;
+            }
+            new_pad_in_.store(true);
+        }
+        PadIn pad_in;
+        if (pad_in_count_ > 0) {
+            pad_in = pad_in_queue_[pad_in_head_];
+            pad_in_head_ = (pad_in_head_ + 1) % PAD_IN_QUEUE_SIZE;
+            pad_in_count_--;
+            last_pad_in_ = pad_in;
+            if (pad_in_count_ == 0)
+                new_pad_in_.store(false);
+        } else {
+            pad_in = last_pad_in_;
+        }
         mutex_exit(&pad_in_mutex_);
-
         return pad_in;
     }
 
@@ -204,9 +236,26 @@ public:
     inline void set_pad_in(PadIn pad_in)
     {
         mutex_enter_blocking(&pad_in_mutex_);
-        pad_in_ = pad_in;
+        if (pad_in_count_ < PAD_IN_QUEUE_SIZE) {
+            pad_in_queue_[pad_in_tail_] = pad_in;
+            pad_in_tail_ = (pad_in_tail_ + 1) % PAD_IN_QUEUE_SIZE;
+            pad_in_count_++;
+        } else {
+            /* Queue full: drop oldest, keep newest so fast taps (press+release) both get sent */
+            pad_in_head_ = (pad_in_head_ + 1) % PAD_IN_QUEUE_SIZE;
+            pad_in_queue_[pad_in_tail_] = pad_in;
+            pad_in_tail_ = (pad_in_tail_ + 1) % PAD_IN_QUEUE_SIZE;
+        }
         new_pad_in_.store(true);
         mutex_exit(&pad_in_mutex_);
+    }
+
+    /** Bluetooth (Core1): never blocks on Core0 — avoids stalling the BT stack in HID callbacks. */
+    inline void set_pad_in_from_bluetooth(const PadIn& pad_in)
+    {
+        bt_pending_pad_ = pad_in;
+        bt_pad_staged_.store(true, std::memory_order_release);
+        new_pad_in_.store(true, std::memory_order_release);
     }
 
     inline void set_pad_out(const PadOut& pad_out)
@@ -224,10 +273,18 @@ public:
         mutex_exit(&chatpad_in_mutex_);
     }
 
-    inline void reset_pad_in() 
-	{ 
+    // Wii U GC adapter: set by host when controller uses positive Y for physical up (e.g. Xbox One/360)
+    void set_stick_y_positive_is_up(bool v) { stick_y_positive_is_up_ = v; }
+    bool stick_y_positive_is_up() const { return stick_y_positive_is_up_; }
+
+    inline void reset_pad_in()
+    {
+        bt_pad_staged_.store(false, std::memory_order_relaxed);
         mutex_enter_blocking(&pad_in_mutex_);
-        pad_in_ = PadIn();
+        pad_in_head_ = 0;
+        pad_in_tail_ = 0;
+        pad_in_count_ = 0;
+        last_pad_in_ = PadIn();
         mutex_exit(&pad_in_mutex_);
         new_pad_in_.store(true);
     }
@@ -341,13 +398,21 @@ public:
                     : trigger_value;
     }
 
-private:    
+    static constexpr unsigned PAD_IN_QUEUE_SIZE = 8;
+
+private:
+    PadIn bt_pending_pad_{};
+    std::atomic<bool> bt_pad_staged_{false};
     mutex_t pad_in_mutex_;
     mutex_t pad_out_mutex_;
     mutex_t chatpad_in_mutex_;
 
     PadOut pad_out_;
-    PadIn pad_in_;
+    PadIn pad_in_queue_[PAD_IN_QUEUE_SIZE];
+    unsigned pad_in_head_{0};
+    unsigned pad_in_tail_{0};
+    unsigned pad_in_count_{0};
+    PadIn last_pad_in_{};
     ChatpadIn chatpad_in_{0};
 
     std::atomic<bool> new_pad_in_{false};
@@ -358,6 +423,8 @@ private:
     std::atomic<bool> analog_device_{false};
 
     bool profile_analog_enabled_{false};
+
+    bool stick_y_positive_is_up_{false};  // true for Xbox (positive Y = up), false for Wii U/Nintendo
 
     JoystickSettings joy_settings_l_;
     JoystickSettings joy_settings_r_;
@@ -372,7 +439,9 @@ private:
     void set_profile_settings(const UserProfile& profile)
     {
         profile_analog_enabled_ = profile.analog_enabled ? true : false;
+#if 0
         OGXM_LOG("profile_analog_enabled_: %d\n", profile_analog_enabled_);
+#endif
 
         if ((joy_settings_l_en_ = !joy_settings_l_.is_same(profile.joystick_settings_l)))
         {
@@ -399,11 +468,13 @@ private:
             trig_settings_r_.set_from_raw(profile.trigger_settings_r);
         }
 
+#if 0
         OGXM_LOG("GamepadMapper: JoyL: %s, JoyR: %s, TrigL: %s, TrigR: %s\n",
             joy_settings_l_en_ ? "Enabled" : "Disabled",
             joy_settings_r_en_ ? "Enabled" : "Disabled",
             trig_settings_l_en_ ? "Enabled" : "Disabled",
             trig_settings_r_en_ ? "Enabled" : "Disabled");
+#endif
     }
 
     void set_profile_mappings(const UserProfile& profile)

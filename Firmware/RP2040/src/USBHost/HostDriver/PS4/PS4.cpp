@@ -4,13 +4,38 @@
 #include "host/usbh.h"
 #include "class/hid/hid_host.h"
 
+#include "Board/Config.h"
+#if defined(CONFIG_EN_USB_HOST)
+#include "pio_usb.h"
+#endif
+
 #include "USBHost/HostDriver/PS4/PS4.h"
 
 void PS4Host::initialize(Gamepad& gamepad, uint8_t address, uint8_t instance, const uint8_t* report_desc, uint16_t desc_len) 
 {
+    (void)gamepad;
+    (void)report_desc;
+    (void)desc_len;
+
     out_report_.report_id = 0x05;
     out_report_.set_led = 1;
     out_report_.lightbar_blue = 0xFF / 2;
+
+    /* PS5Host pushes an initial OUT report; PS4 did not. Composite XInput+HID pads often need this
+     * before IN starts. Periodic send_feedback only runs when new_pad_out/has_rumble, so the LED
+     * and input path never woke when we stopped using XInput for feedback on these devices. */
+    uint32_t attempts = 0;
+    while (!tuh_hid_send_report(address, instance, 0, reinterpret_cast<const uint8_t*>(&out_report_), sizeof(PS4::OutReport)))
+    {
+#if defined(CONFIG_EN_USB_HOST)
+        pio_usb_host_frame();
+#endif
+        tuh_task();
+        if (++attempts > 4000u)
+        {
+            break;
+        }
+    }
 
     tuh_hid_receive_report(address, instance);
 }
@@ -21,6 +46,7 @@ void PS4Host::process_report(Gamepad& gamepad, uint8_t address, uint8_t instance
     in_report_.buttons[2] &= PS4::COUNTER_MASK;
     if (std::memcmp(reinterpret_cast<const PS4::InReport*>(report), &prev_in_report_, sizeof(PS4::InReport)) == 0)
     {
+        tuh_hid_receive_report(address, instance);
         return;
     }
 

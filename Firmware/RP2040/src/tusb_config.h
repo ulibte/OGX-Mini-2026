@@ -156,6 +156,9 @@
 #define CFG_TUH_HID_EPIN_BUFSIZE    64
 #define CFG_TUH_HID_EPOUT_BUFSIZE   64
 
+/* Required for Switch 2 Pro bulk bring-up (tuh_edpt_xfer completion callbacks). */
+#define CFG_TUH_API_EDPT_XFER       1
+
 #endif //defined(CONFIG_EN_USB_HOST)
 
 #ifdef __cplusplus

@@ -40,4 +40,5 @@ function(apply_lib_patches EXTERNAL_DIR)
     else ()
         message(FATAL_ERROR "Failed to apply Bluepad32 patch: ${BLUEPAD32_PATCH_ERROR}")
     endif ()
+
 endfunction()

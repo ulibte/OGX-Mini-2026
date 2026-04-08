@@ -5,6 +5,15 @@
 
 #include "USBHost/HostDriver/PS3/PS3.h"
 
+#if defined(CONFIG_EN_BLUETOOTH)
+extern "C" {
+/* Do not include bt/uni_bt.h here: it pulls BTstack, whose btstack_hid.h redefines
+ * HID_REPORT_TYPE_* / hid_report_type_t and breaks compilation with TinyUSB hid.h. */
+typedef uint8_t uni_bt_bd_addr_t[6];
+void uni_bt_get_local_bd_addr_safe(uni_bt_bd_addr_t addr);
+}
+#endif
+
 const tusb_control_request_t PS3Host::RUMBLE_REQUEST = 
 {
     .bmRequestType = 0x21,
@@ -13,6 +22,52 @@ const tusb_control_request_t PS3Host::RUMBLE_REQUEST =
     .wIndex = 0x0000, 
     .wLength = sizeof(PS3::OutReport)
 };
+
+#if defined(CONFIG_EN_BLUETOOTH)
+/* Same as bluepad32/tools/sixaxispairer — DualShock 3 stores host BD_ADDR for Bluetooth. */
+const tusb_control_request_t PS3Host::BT_MAC_FEATURE_REQUEST = {
+    .bmRequestType = 0x21,
+    .bRequest = 0x09, // SET_REPORT
+    .wValue = static_cast<uint16_t>((HID_REPORT_TYPE_FEATURE << 8) | 0xF5),
+    .wIndex = 0x0000,
+    .wLength = 8,
+};
+
+bool PS3Host::local_bt_addr_is_nonzero(const uint8_t addr[6]) {
+    for (int i = 0; i < 6; ++i) {
+        if (addr[i] != 0) {
+            return true;
+        }
+    }
+    return false;
+}
+
+void PS3Host::bt_pair_complete_cb(tuh_xfer_s* xfer) {
+    auto* init_state = reinterpret_cast<InitState*>(xfer->user_data);
+    if (init_state == nullptr) {
+        return;
+    }
+    init_state->stage = InitStage::DONE;
+    init_state->reports_enabled = true;
+    send_control_xfer(init_state->dev_addr, &PS3Host::RUMBLE_REQUEST, reinterpret_cast<uint8_t*>(init_state->out_report), nullptr, 0);
+}
+
+void PS3Host::try_deferred_ds3_bt_pair(uint8_t address) {
+    if (!ds3_bt_pair_deferred_) {
+        return;
+    }
+    uni_bt_bd_addr_t addr{};
+    uni_bt_get_local_bd_addr_safe(addr);
+    if (!local_bt_addr_is_nonzero(addr)) {
+        return;
+    }
+    ds3_bt_pair_deferred_ = false;
+    bt_pair_buf_[0] = 0xF5;
+    bt_pair_buf_[1] = 0;
+    std::memcpy(bt_pair_buf_.data() + 2, addr, 6);
+    (void)send_control_xfer(address, &BT_MAC_FEATURE_REQUEST, bt_pair_buf_.data(), nullptr, 0);
+}
+#endif
 
 void PS3Host::initialize(Gamepad& gamepad, uint8_t address, uint8_t instance, const uint8_t* report_desc, uint16_t desc_len) 
 {
@@ -28,6 +83,11 @@ void PS3Host::initialize(Gamepad& gamepad, uint8_t address, uint8_t instance, co
     init_state_.out_report = &out_report_;
     init_state_.dev_addr = address;
     init_state_.init_buffer.fill(0);
+    init_state_.bt_pair_report.fill(0);
+#if defined(CONFIG_EN_BLUETOOTH)
+    init_state_.defer_bt_pair = &ds3_bt_pair_deferred_;
+    ds3_bt_pair_deferred_ = false;
+#endif
 
     tusb_control_request_t init_request =
     {
@@ -86,6 +146,22 @@ void PS3Host::get_report_complete_cb(tuh_xfer_s *xfer)
             send_control_xfer(init_state->dev_addr, &init_request, init_state->init_buffer.data(), get_report_complete_cb, xfer->user_data);
             break;
         case InitStage::RESP3:
+#if defined(CONFIG_EN_BLUETOOTH)
+        {
+            uni_bt_bd_addr_t addr{};
+            uni_bt_get_local_bd_addr_safe(addr);
+            if (local_bt_addr_is_nonzero(addr)) {
+                init_state->bt_pair_report[0] = 0xF5;
+                init_state->bt_pair_report[1] = 0;
+                std::memcpy(init_state->bt_pair_report.data() + 2, addr, 6);
+                send_control_xfer(init_state->dev_addr, &BT_MAC_FEATURE_REQUEST, init_state->bt_pair_report.data(), bt_pair_complete_cb, xfer->user_data);
+                break;
+            }
+            if (init_state->defer_bt_pair != nullptr) {
+                *init_state->defer_bt_pair = true;
+            }
+        }
+#endif
             init_state->stage = InitStage::DONE;
             init_state->reports_enabled = true;
             send_control_xfer(init_state->dev_addr, &PS3Host::RUMBLE_REQUEST, reinterpret_cast<uint8_t*>(init_state->out_report), nullptr, 0);
@@ -97,6 +173,9 @@ void PS3Host::get_report_complete_cb(tuh_xfer_s *xfer)
 
 void PS3Host::process_report(Gamepad& gamepad, uint8_t address, uint8_t instance, const uint8_t* report, uint16_t len)
 {
+#if defined(CONFIG_EN_BLUETOOTH)
+    try_deferred_ds3_bt_pair(address);
+#endif
     const PS3::InReport* in_report = reinterpret_cast<const PS3::InReport*>(report);
     if (std::memcmp(&prev_in_report_, in_report, std::min(static_cast<size_t>(len), static_cast<size_t>(26))) == 0)
     {
